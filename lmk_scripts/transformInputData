@@ -1,0 +1,154 @@
+#!/bin/bash
+
+set -euo pipefail
+
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the input data
+
+# This script processes all files in the DIMACS, SRTM and DIMACS10 directories defined below. A DIMACS, SRTM or DIMACS10
+# network is converted only if a dataset config in datasets_dir is built from it (its network setting); the others are skipped with
+# a warning. At the end it warns about each dataset whose input files (<network>-<edge_type>.graph and .coordinates in data_dir) no
+# download was converted into
+
+dimacs_data_dir="$data_dir/dimacs"
+srtm_data_dir="$data_dir/srtm"
+dimacs10_data_dir="$data_dir/dimacs10"
+
+# The datasets and the input files each is built from, one "<dataset> <network>-<edge_type>" line each, and the input files that
+# this run converts (for the warnings at the end)
+config_inputs=$(for dataset in $(ls "$datasets_dir"); do
+    (. globalVariables "" --quiet_globalVariables "$dataset"; echo "$dataset $network-$edge_type")
+done)
+converted_inputs=()
+
+# We assume there is a gr.gz for every co.gz file
+ext="co.gz"
+for vertex_gz_file in $dimacs_data_dir/*; do
+    if [ "${vertex_gz_file}" != "${vertex_gz_file%.${ext}}" ];then
+        if [[ $vertex_gz_file =~ ((.*)\.co)\.gz$ ]]; then
+            vertex_file="${BASH_REMATCH[1]}"
+            file_prefix="${BASH_REMATCH[2]}" # e.g. USA-road-d.NW
+            dimacs_network="${file_prefix##*.}" # e.g. NW
+            # The edge types of the datasets built from this network (each config's network and edge_type)
+            edge_types=$(for dataset in $(ls "$datasets_dir"); do
+                (. globalVariables "" --quiet_globalVariables "$dataset"; if [[ $network == "$dimacs_network" ]]; then echo "$edge_type"; fi)
+            done | sort -u)
+            if [[ -z $edge_types ]]; then
+                echo "WARNING: Skipping the DIMACS network $dimacs_network, as no dataset config in $datasets_dir is built from it (network=\"$dimacs_network\")" >&2
+                continue
+            fi
+
+            # Unzip files
+            gunzip -c $vertex_gz_file > $vertex_file
+            for dimacs_edge_type in $edge_types; do
+                edge_file="${file_prefix//-d./-$dimacs_edge_type.}.gr" # e.g. USA-road-t.NW.gr
+                if [[ ! -f $edge_file.gz ]]; then
+                    echo "Skipping $dimacs_network with edge type $dimacs_edge_type ($edge_file.gz not found)"
+                    continue
+                fi
+                gunzip -c $edge_file.gz > $edge_file
+
+                args="-c transform -m dimacs -e $edge_file -n $vertex_file -o $data_dir"
+                ${exe_path}/$main_program $args
+                converted_inputs+=("$dimacs_network-$dimacs_edge_type")
+
+                rm $edge_file
+            done
+
+            # Remove unzipped files
+            rm $vertex_file
+        else 
+            echo "Unexpected DIMACS file name format!"
+            exit 1
+        fi
+    fi
+    #echo $vertex_gz_file
+done
+
+# The networks the dataset configs are built from
+config_networks=$(while read -r dataset input; do echo "${input%-*}"; done <<< "$config_inputs" | sort -u)
+
+# Prints the networks to convert from the terrain or mesh download $1 (its name without extensions), one "<network> <crop>" line
+# each, with "-" as the crop of the whole download: the whole download (network $1) and each of its crops in input_crops (see
+# globalVariables), if a dataset config is built from it. Warns about the others
+networks_to_convert() {
+    local download=$1 entry fields network
+    local candidates=("$download -")
+    for entry in $input_crops; do
+        IFS=: read -r -a fields <<< "$entry" # Download, network and crop
+        if [[ ${fields[0]} == "$download" ]]; then
+            candidates+=("${fields[1]} ${fields[2]}")
+        fi
+    done
+    for entry in "${candidates[@]}"; do
+        network=${entry%% *}
+        if grep -qxF "$network" <<< "$config_networks"; then
+            echo "$entry"
+        else
+            echo "WARNING: Skipping the network $network, as no dataset config in $datasets_dir is built from it (network=\"$network\")" >&2
+        fi
+    done
+}
+
+# Terrain networks from the SRTM elevation tiles in srtm_data_dir (<tile>.<product>.hgt.zip, e.g. N39W107.SRTMGL1.hgt.zip at
+# 1 arcsecond or N39W107.SRTMGL3.hgt.zip at 3 arcseconds). Each cell is a vertex joined to its 8 neighbours by the 3D surface length
+# of the step in decimetres (transform -m dem), written to <network>-d.graph and <network>-d.coordinates
+for zip_file in "$srtm_data_dir"/*.hgt.zip; do
+    [[ -f $zip_file ]] || continue # No tiles
+    download=$(basename "$zip_file" .hgt.zip) # e.g. N39W107.SRTMGL1
+    mapfile -t networks < <(networks_to_convert "$download")
+    (( ${#networks[@]} > 0 )) || continue
+    hgt_file="$srtm_data_dir/$download.hgt" # The archive holds <tile>.hgt; the tile in the name gives the converter the latitude
+    unzip -p "$zip_file" "*.hgt" > "$hgt_file"
+    for entry in "${networks[@]}"; do
+        read -r network crop <<< "$entry"
+        echo "Converting $network..."
+        args="-c transform -m dem -e $hgt_file -o $data_dir -r $network"
+        if [[ $crop != "-" ]]; then
+            args="$args -x $crop"
+        fi
+        ${exe_path}/$main_program $args
+        converted_inputs+=("$network-d")
+    done
+    rm "$hgt_file"
+done
+
+# Mesh networks from the DIMACS10 METIS graphs in dimacs10_data_dir (<graph>.graph.bz2, e.g. NACA0015.graph.bz2, with the
+# coordinates in num-coords.tar.bz2, which holds <graph>.coords.bz2). Each edge is weighted by its planar length (transform -m metis),
+# written to <network>-d.graph and <network>-d.coordinates
+coords_tar_file="$dimacs10_data_dir/num-coords.tar.bz2"
+for graph_bz2_file in "$dimacs10_data_dir"/*.graph.bz2; do
+    [[ -f $graph_bz2_file ]] || continue # No graphs
+    download=$(basename "$graph_bz2_file" .graph.bz2) # e.g. NACA0015
+    mapfile -t networks < <(networks_to_convert "$download")
+    (( ${#networks[@]} > 0 )) || continue
+    graph_file="$dimacs10_data_dir/$download.graph"
+    coords_file="$dimacs10_data_dir/$download.coords"
+    if [[ ! -f $coords_tar_file ]] || ! tar -xjOf "$coords_tar_file" "$download.coords.bz2" 2> /dev/null | bunzip2 -c > "$coords_file" 2> /dev/null; then
+        echo "Skipping $download ($download.coords.bz2 not found in $coords_tar_file)"
+        rm -f "$coords_file"
+        continue
+    fi
+    bunzip2 -c "$graph_bz2_file" > "$graph_file"
+    for entry in "${networks[@]}"; do
+        read -r network crop <<< "$entry"
+        echo "Converting $network..."
+        args="-c transform -m metis -e $graph_file -n $coords_file -o $data_dir -r $network"
+        if [[ $crop != "-" ]]; then
+            args="$args -x $crop"
+        fi
+        ${exe_path}/$main_program $args
+        converted_inputs+=("$network-d")
+    done
+    rm "$graph_file" "$coords_file"
+done
+
+# Datasets whose input files no download was converted into
+while read -r dataset input; do
+    if [[ " ${converted_inputs[*]} " != *" $input "* ]]; then
+        if [[ -f $data_dir/$input.graph && -f $data_dir/$input.coordinates ]]; then
+            echo "WARNING: No download was converted into the input files of $dataset ($input.graph and .coordinates); the existing ones in $data_dir are unchanged" >&2
+        else
+            echo "WARNING: No download was converted into the input files of $dataset ($input.graph and .coordinates), and $data_dir has none, so buildBinaryGraphs cannot build $dataset" >&2
+        fi
+    fi
+done <<< "$config_inputs"

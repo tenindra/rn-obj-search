@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Runs the whole pipeline for each dataset given, or for all the datasets below if none is given, passing it to every script with
+# -d (globalVariables is not changed): its binary graph, query and object sets, the indexes its experiments share, then for each
+# experiment in its config the experiment's indexes, the timed and statistics runs and the verification. W-d copies W-t's query and
+# object sets (the same graph with other edge weights), so W-t must have run before it
+# Usage: bash runAllDatasets [dataset ...]
+set -euo pipefail
+cd "$(dirname "$0")"
+
+datasets=("$@")
+if (( ${#datasets[@]} == 0 )); then
+    datasets=(NACA0015-d W-t W-d N39W107.SRTMGL3-d USA-t)
+fi
+WAIT_SECONDS=60
+
+wait_between() {
+    echo "Waiting ${WAIT_SECONDS}s..."
+    sleep "$WAIT_SECONDS"
+}
+
+# Prints a command with its arguments (and so the dataset), then runs it
+run() {
+    echo "+ $*"
+    "$@"
+}
+
+for dataset in "${datasets[@]}"; do
+    echo "=== $dataset ==="
+    copy_args=()
+    if [[ $dataset == "W-d" ]]; then
+        copy_args=(-c W-t)
+    fi
+    run bash buildBinaryGraphs -d "$dataset"
+    run bash generateQuerySets -d "$dataset" "${copy_args[@]}"
+    run bash generateObjectSets -d "$dataset" -o "${copy_args[@]}"
+    run bash buildDatasetIndexes -d "$dataset" -o
+
+    experiments=$(sed -n 's/^experiments="\([^"]*\)".*/\1/p' "datasets/$dataset")
+    for experiment in ${experiments//,/ }; do
+        echo "=== $dataset: $experiment ==="
+        wait_between
+        run bash buildExperimentIndexes -e "$experiment" -d "$dataset" -o
+        wait_between
+        run bash runQueryExperiments time -e "$experiment" -d "$dataset"
+        run bash runQueryExperiments stats -e "$experiment" -d "$dataset"
+        run bash runVerification all -e "$experiment" -d "$dataset"
+    done
+done
+
+echo "Done."

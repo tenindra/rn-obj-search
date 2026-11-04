@@ -1,0 +1,70 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash downloadZenodo
+Downloads the parts of the dataset archive from Zenodo to output_path, checks each against its MD5 on Zenodo, joins them, unpacks
+the archive in output_path (data/ and real_world_pois/) and checks the unpacked files against the archive's SHA256SUMS."
+. scriptArguments "" 0 "$@"
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the download
+
+record_id=23533198
+archive=spatial_network_for_object_search.tar.gz
+parts_dir="$output_path/zenodo_parts" # Removed once the unpacked files match SHA256SUMS
+
+for cmd in curl python3 md5sum sha256sum tar; do
+    command -v "$cmd" > /dev/null || { echo "$cmd not found" >&2; exit 1; }
+done
+
+echo "Fetching the file list of Zenodo record $record_id"
+record=$(curl -fsSL "https://zenodo.org/api/records/$record_id") || { echo "Could not fetch Zenodo record $record_id" >&2; exit 1; }
+# One line per part (name, MD5 and download URL), in the order of their names, whose numbers are zero-padded
+parts=$(python3 -I -c '
+import json, sys
+archive = sys.argv[1]
+for f in sorted(json.load(sys.stdin)["files"], key=lambda f: f["key"]):
+    if f["key"].startswith(archive + ".") and f["key"].endswith(".part"):
+        print(f["key"], f["checksum"].removeprefix("md5:"), f["links"]["self"])
+' "$archive" <<< "$record")
+if [[ -z $parts ]]; then
+    echo "Zenodo record $record_id has no parts of $archive" >&2
+    exit 1
+fi
+
+mkdir -p "$parts_dir"
+part_files=()
+while read -r name md5 url; do
+    part="$parts_dir/$name"
+    if [[ -f $part && $(md5sum < "$part" | cut -d' ' -f1) == "$md5" ]]; then
+        echo "$name already downloaded"
+    else
+        echo "Downloading $name"
+        if ! curl -fL --retry 5 -o "$part.download" "$url"; then
+            echo "Downloading $name failed; run the script again to continue" >&2
+            exit 1
+        fi
+        if [[ $(md5sum < "$part.download" | cut -d' ' -f1) != "$md5" ]]; then
+            rm "$part.download"
+            echo "$name does not match its MD5 on Zenodo; run the script again to download it again" >&2
+            exit 1
+        fi
+        mv "$part.download" "$part"
+    fi
+    part_files+=("$part")
+done <<< "$parts"
+
+echo "Joining ${#part_files[@]} parts into $output_path/$archive"
+cat "${part_files[@]}" > "$output_path/$archive"
+
+echo "Unpacking $archive in $output_path"
+if ! tar -xzf "$output_path/$archive" -C "$output_path"; then
+    # Every part matched its MD5, so a part is missing from the record or out of order
+    echo "$archive is damaged although every part matched its MD5" >&2
+    exit 1
+fi
+
+echo "Checking the unpacked files against SHA256SUMS"
+(cd "$output_path" && sha256sum -c --quiet SHA256SUMS)
+
+rm -r "$parts_dir"
+echo "All files match SHA256SUMS; $output_path/$archive is no longer needed"

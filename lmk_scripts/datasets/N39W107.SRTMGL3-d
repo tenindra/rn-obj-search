@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Dataset config of N39W107.SRTMGL3-d: everything about the experiments that may differ between datasets. globalVariables sources it
+# for the dataset a script works on (default_network or the dataset the script is given), checks it and derives the remaining settings
+# (file names, figure labels, the query parameters passed to the binary). Every setting is written out; a new dataset starts
+# as a copy of an existing config. The file's name is the dataset's name, which names everything built for it: the binary graph
+# $idx_dir/<dataset>.bin, its indexes, object and query sets, stats files and figures
+#
+# N39W107.SRTMGL3-d: the whole SRTM 3-arcsecond elevation tile N39W107, 1201 x 1201 cells (transformInputData). Each cell is a vertex
+# at its projected position, joined to its 8 neighbours by the 3D surface length of the step, in decimetres. It has no real-world POI
+# sets
+
+network="N39W107.SRTMGL3" # Input network: its text files are data_dir/<network>-<edge_type>.graph and .coordinates, its real-world POI sets
+             # are in real_world_pois/<network>; datasets with other names can share it (e.g. with other edge weights)
+edge_type="d" # Edge weights of the input text files: "t" travel time, "d" distance
+
+# Real-world POI sets: object set names (empty if the dataset has none)
+rw_sets=""
+
+experiments="aknn" # Experiments the dataset runs
+densities="0.1,0.01,0.001,0.0001" # Object set densities, shared by the experiments (each default density must be one of them)
+
+# Indexes the experiments share (buildDatasetIndexes): the G-tree, ALT and R-tree parameters. Each experiment sets its own
+# SUL-Tree and COL-Tree parameters (buildExperimentIndexes) in <experiment>_index_parameters and <experiment>_obj_index_parameters
+dataset_index_parameters="gtree_fanout=4,gtree_maxleafsize=256,alt_numlandmarks=16,alt_landmarktype=random,rtree_branchfactor=8"
+
+# SDL experiment (runSDLExperiment): the SUL-Tree parameters it builds with, which do not depend on the query experiments (empty if
+# the dataset does not run it)
+sdl_index_parameters=""
+
+# AkNN
+aknn_index_parameters="sltree_fanout=4,sltree_maxleafsize=256,sltree_numlmks=1,sltree_lmktype=border_minmax"
+aknn_obj_index_parameters="colt_listsize=64"
+aknn_lists="varyingk=1,varyingdensity=0,varyingqvsetsize=0,varyingqvsetsubnetsize=1,varyingrwset=0" # Query lists to run (1) or skip (0)
+aknn_def_k="10"
+aknn_kvalues="1,5,10,25,50"
+aknn_def_density="0.01"
+aknn_qv_def_setsize="8" # Query vertices per query
+aknn_qv_setsizes="2,4,8,16,32"
+aknn_qv_def_setsubnetsize="15" # Size of the subnetwork the query vertices are drawn from (percentage of the network)
+aknn_qv_setsubnetsizes="1,5,15,50,100"
+aknn_num_sets="20" # Object sets per density
+aknn_num_qv_sets="50" # Query vertex sets per object set
+
+# Parameter tests (runParameterExperiments)
+par_tests="0" # Run them on this dataset (1) or refuse them (0)

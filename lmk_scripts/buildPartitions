@@ -1,0 +1,33 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash buildPartitions -e experiment [-o] [-d dataset]
+Builds the hierarchical graph partition the experiment's SUL-Tree is built from, with its SUL-Tree partitioning parameters
+(sltree_fanout and sltree_maxleafsize). buildExperimentIndexes builds the partition itself if it does not exist yet; this script
+also rebuilds it.
+  -e, --experiment  knn, aknn, fkn or range
+  -o, --overwrite   rebuild the partition if it already exists (it is skipped otherwise)
+  -d, --dataset     the dataset (default_network in globalVariables if omitted)"
+. scriptArguments eod 0 "$@"
+. globalVariables "$experiment" "" "$dataset"
+
+# The partition depends only on the fanout and the maximum leaf size, so SUL-Trees with different landmark parameters share it.
+# SUL-Tree and COL-Tree indexes built from a previous partition stay valid when it is rebuilt, but SUL-Trees built afterwards use
+# the new partition.
+
+index_parameters="${experiment}_index_parameters"
+fanout=$(get_param "${!index_parameters}" sltree_fanout)
+maxleafsize=$(get_param "${!index_parameters}" sltree_maxleafsize)
+partition_file="$idx_dir/${default_network}_fanout=${fanout}_maxleafsize=${maxleafsize}.partition"
+if [[ -f "$partition_file" && $overwrite == false ]]; then
+    echo "Partition $partition_file exists, skipping (pass -o to rebuild it)"
+    exit 0
+fi
+echo "Building partition for $default_network..."
+if [[ -f "$partition_file" ]] && compgen -G "$idx_dir/${default_network}_fanout=${fanout}_maxleafsize=${maxleafsize}_*.sltree" > /dev/null; then
+    echo "WARNING: SUL-Tree indexes ${default_network}_fanout=${fanout}_maxleafsize=${maxleafsize}_*.sltree were built from the previous partition; rebuild them (bash buildExperimentIndexes -e $experiment) if they should match the new one" >&2
+fi
+args="-c lmk_exp -e partitions -g $idx_dir/$default_network.bin -p sltree=1,${!index_parameters} -f $output_path -s $stats_dir/$idx_stats_file"
+#echo "${exe_path}/$main_program $args"
+${exe_path}/$main_program $args

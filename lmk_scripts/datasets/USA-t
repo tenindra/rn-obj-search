@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# Dataset config of USA-t: everything about the experiments that may differ between datasets. globalVariables sources it for the
+# dataset a script works on (default_network or the dataset the script is given), checks it and derives the remaining settings
+# (file names, figure labels, the query parameters passed to the binary). Every setting is written out; a new dataset starts
+# as a copy of an existing config. The file's name is the dataset's name, which names everything built for it: the binary graph
+# $idx_dir/<dataset>.bin, its indexes, object and query sets, stats files and figures
+
+network="USA" # Input network: its text files are data_dir/<network>-<edge_type>.graph and .coordinates, its real-world POI sets
+             # are in real_world_pois/<network>; datasets with other names can share it (e.g. with other edge weights)
+edge_type="t" # Edge weights of the input text files: "t" travel time, "d" distance
+
+# Real-world POI sets: object set names (empty if the dataset has none)
+rw_sets="courthouse,university,hospital,hotel,fast_food,post_office,park,school"
+
+experiments="knn,aknn,fkn,range" # Experiments the dataset runs
+densities="0.1,0.01,0.001,0.0001" # Object set densities, shared by the experiments (each default density must be one of them)
+
+# Indexes the experiments share (buildDatasetIndexes): the G-tree, ALT and R-tree parameters. Each experiment sets its own
+# SUL-Tree and COL-Tree parameters (buildExperimentIndexes) in <experiment>_index_parameters and <experiment>_obj_index_parameters
+dataset_index_parameters="gtree_fanout=4,gtree_maxleafsize=512,alt_numlandmarks=16,alt_landmarktype=random,rtree_branchfactor=32"
+
+# SDL experiment (runSDLExperiment): the SUL-Tree parameters it builds with, which do not depend on the query experiments (empty if
+# the dataset does not run it)
+sdl_index_parameters="sltree_fanout=8,sltree_maxleafsize=1024,sltree_numlmks=4,sltree_lmktype=random"
+
+# kNN
+knn_index_parameters="sltree_fanout=8,sltree_maxleafsize=1024,sltree_numlmks=4,sltree_lmktype=slice_furthest"
+knn_obj_index_parameters="colt_listsize=256"
+knn_lists="varyingk=1,varyingdensity=1,varyingrwset=1" # Query lists to run (1) or skip (0)
+knn_def_k="10"
+knn_kvalues="1,5,10,25,50"
+knn_def_density="0.001"
+knn_num_sets="20" # Object sets per density
+knn_num_qv="100" # Query vertices per object set
+
+# AkNN
+aknn_index_parameters="sltree_fanout=8,sltree_maxleafsize=1024,sltree_numlmks=1,sltree_lmktype=border_minmax"
+aknn_obj_index_parameters="colt_listsize=256"
+aknn_lists="varyingk=1,varyingdensity=1,varyingqvsetsize=1,varyingqvsetsubnetsize=1,varyingrwset=1" # Query lists to run (1) or skip (0)
+aknn_def_k="10"
+aknn_kvalues="1,5,10,25,50"
+aknn_def_density="0.001"
+aknn_qv_def_setsize="8" # Query vertices per query
+aknn_qv_setsizes="2,4,8,16,32"
+aknn_qv_def_setsubnetsize="15" # Size of the subnetwork the query vertices are drawn from (percentage of the network)
+aknn_qv_setsubnetsizes="1,5,15,50,100"
+aknn_num_sets="20" # Object sets per density
+aknn_num_qv_sets="50" # Query vertex sets per object set
+
+# FkN
+fkn_index_parameters="sltree_fanout=8,sltree_maxleafsize=1024,sltree_numlmks=8,sltree_lmktype=random"
+fkn_obj_index_parameters="colt_listsize=256"
+fkn_lists="varyingk=1,varyingdensity=1,varyingrwset=1" # Query lists to run (1) or skip (0)
+fkn_def_k="10"
+fkn_kvalues="1,5,10,25,50"
+fkn_def_density="0.001"
+fkn_num_sets="15" # Object sets per density
+fkn_num_qv="100" # Query vertices per object set
+
+# Range
+range_index_parameters="sltree_fanout=8,sltree_maxleafsize=1024,sltree_numlmks=1,sltree_lmktype=border_minmax"
+range_obj_index_parameters="colt_listsize=256"
+range_lists="varyingrange=1,varyingdensity=1,varyingrwset=1" # Query lists to run (1) or skip (0)
+range_def_range="2.5" # Percentage of the network's diameter
+range_rangevalues="0.5,1,2.5,5,10"
+range_def_density="0.01"
+range_num_sets="15" # Object sets per density
+range_num_qv="100" # Query vertices per object set
+
+# Parameter tests (runParameterExperiments)
+par_tests="1" # Run them on this dataset (1) or refuse them (0)
+par_fanouts="2,4,8,16" # SUL-Tree fanouts
+par_numlmks="1,2,4,8" # Landmarks per SUL-Tree node
+par_min_lambda="512" # Maximum leaf size of the partitions and SUL-Trees, and so the smallest COL-Tree list size at worst case
+                      # (density 1), as a leaf's objects stay in one list. Smaller list sizes usually hold at densities <= 0.1 (the
+                      # COL-Tree build warns about a leaf with more objects); smaller leaves would make partitioning expensive
+par_colt_lambdas="128,256,512,1024" # COL-Tree list sizes
+# Default parameters of each experiment's tests, which the tests vary one or two at a time
+par_knn_defaults="fanout=8,numlmks=4,lmktype=slice_furthest,lambda=256" # Note: Remember to execute runParameterTesting build_knn_obj if you change defaults
+par_aknn_defaults="fanout=8,numlmks=1,lmktype=border_minmax,lambda=256" # Note: Remember to execute runParameterTesting build_aknn_obj if you change defaults
+par_fkn_defaults="fanout=8,numlmks=8,lmktype=random,lambda=256" # Note: Remember to execute runParameterTesting build_fkn_obj if you change defaults
+par_range_defaults="fanout=8,numlmks=1,lmktype=border_minmax,lambda=256" # Note: Remember to execute runParameterTesting build_range_obj if you change defaults

@@ -1,0 +1,103 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runKNNStatsExperiments [-d dataset] [-o] [-f]
+Runs the kNN query statistics experiments (rn_obj_search_stats) on the dataset and draws their figures.
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments dof 0 "$@"
+. globalVariables knn "" "$dataset"
+
+# Experiment Setup
+
+# Varying K
+varyingk_stats_file="stats_${default_network}_$knn_varyingk_stats_file_suffix.txt"
+varyingk_stats_file_path="$stats_dir/$varyingk_stats_file"
+if [ "$knn_varyingk" == "1" ] && [ -f "$varyingk_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingk_stats_file_path" "$stats_dir/${varyingk_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingk_stats_file_path"
+    fi
+fi
+
+# Varying Density
+varyingdensity_stats_file="stats_${default_network}_$knn_varyingdensity_stats_file_suffix.txt"
+varyingdensity_stats_file_path="$stats_dir/$varyingdensity_stats_file"
+if [ "$knn_varyingdensity" == "1" ] && [ -f "$varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingdensity_stats_file_path" "$stats_dir/${varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingdensity_stats_file_path"
+    fi
+fi
+
+knn_rw="0" # Don't run real-world experiments for stats collection
+knn_methods="ine=0,gtree=0,ier_phl=1,ol_phl=0,nvd_phl=1,llb_phl=0,colt_phl=1" # Don't run non multi-step methods for stats collection
+knn_query_parameters="$knn_methods,knn_def_k=$knn_def_k,knn_def_density=$knn_def_density,knn_def_type=$knn_def_type,knn_def_var=$knn_def_var,knn_rw=$knn_rw,knn_varyingk=$knn_varyingk,knn_varyingdensity=$knn_varyingdensity"
+
+varyingrwset_stats_file="stats_${default_network}_$knn_varyingrwset_stats_file_suffix.txt" # Placeholder only
+
+index_parameters="knn_index_parameters"
+obj_index_parameters="knn_obj_index_parameters" # Part of the object index file names
+query_parameters="$dataset_index_parameters,${!index_parameters},${!obj_index_parameters},$knn_query_parameters,knn_varyingk_stats_file=$varyingk_stats_file,knn_varyingdensity_stats_file=$varyingdensity_stats_file,knn_varyingrwset_stats_file=$varyingrwset_stats_file"
+
+# Note: No '=' signs allowed in stats file names
+
+# Need to create a new file for LBs computed results because we have to remove IER results
+# as we are comparing LLBs for OL vs NVD approaches
+lbs_varyingk_stats_file_path="$stats_dir/lbs_$varyingk_stats_file"
+lbs_varyingdensity_stats_file_path="$stats_dir/lbs_$varyingdensity_stats_file"
+
+# Run Experiments
+args="-c lmk_exp -e query_exp -g $idx_dir/$default_network.bin -q $sets_dir/${default_network}_qv_$knn_pts_filename.txt 
+-k $knn_kvalues -n $knn_num_sets -d $knn_densities -t $knn_def_type -v $knn_def_var -p $query_parameters ${rw_sets:+-r $rw_sets} -f $output_path"
+    
+# echo "${exe_path}/$main_program $args"
+if [ "$figures_only" == false ]; then
+    ${exe_path}/$main_program_stats $args
+
+    # Fix stats files for future figure generation
+    if [ "$knn_varyingk" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingk_stats_file"
+        cat $varyingk_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        # cat insert_input_file_here | bash extractColumnAndAppend 4 "insert_field_here=([[:digit:]]+)" > insert_output_file_here # Column 14 - Template for Additional Stats
+        cat $temp_file_path > $varyingk_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$knn_varyingdensity" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingdensity_stats_file"
+        cat $varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        # cat insert_input_file_here | bash extractColumnAndAppend 4 "insert_field_here=([[:digit:]]+)" > insert_output_file_here # Column 14 - Template for Additional Stats
+        cat $temp_file_path > $varyingdensity_stats_file_path
+        rm $temp_file_path
+    fi
+
+    # Create Separate Stats File without IER for Lower-Bound Computation Comparison
+    if [ "$knn_varyingk" == "1" ]; then
+        cat $varyingk_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingk_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$knn_varyingdensity" == "1" ]; then
+        cat $varyingdensity_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingdensity_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+fi
+
+
+# Generate Figures
+# Varying K
+if [ "$knn_varyingk" == "1" ]; then
+    varyingk_figure_file_prefix="cand_spdist_stats_${default_network}_$knn_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $varyingk_stats_file_path "6,# of Results (k),$knn_kvalues_xtics,'','',''" "13,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingk_figure_file_prefix="cand_unpruned_stats_${default_network}_$knn_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $lbs_varyingk_stats_file_path "6,# of Results (k),$knn_kvalues_xtics,'','',''" "14,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+fi
+
+# Varying Density
+if [ "$knn_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="cand_spdist_stats_${default_network}_$knn_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $varyingdensity_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "13,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingdensity_figure_file_prefix="cand_unpruned_stats_${default_network}_$knn_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $lbs_varyingdensity_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "14,Candidates,'',''" "NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+fi

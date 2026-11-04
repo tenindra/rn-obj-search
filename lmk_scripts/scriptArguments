@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Command-line options of the pipeline scripts. A script sets its usage text in usage and sources this file before globalVariables:
+#   . scriptArguments <options> <positional> "$@"
+# <options> are the letters of the options the script takes and <positional> the most other arguments (a step or mode) it takes,
+# which come before the options.
+#   -d, --dataset <dataset>      the dataset (a comma-separated list for the scripts that take several), "" if not given
+#   -e, --experiment <type>      the experiment: knn, aknn, fkn or range (globalVariables checks it), required by the scripts that
+#                                take it
+#   -o, --overwrite              true if given (each script says what it overwrites)
+#   -f, --figures-only           true if given
+#   -m, --methods <methods>      comma-separated methods (runVerification), "" if not given
+#   -g, --ground-truth <file>    a ground truth file (runVerification), "" if not given
+#   -c, --copy-from <dataset>    a dataset whose sets are copied instead of generated (generateQuerySets, generateObjectSets), "" if
+#                                not given
+#   -i, --indexes <indexes>      comma-separated indexes to build (buildDatasetIndexes, buildExperimentIndexes), "" if not given
+#   -h, --help                   prints usage and exits
+# Sets dataset, experiment, overwrite, figures_only, methods, ground_truth, copy_from, indexes and positional (the other arguments,
+# in order). An unknown option, an option the script does not take, an option without its value, an argument after the options,
+# too many other arguments or a missing -e prints usage and exits.
+
+script_options=$1
+script_positional=$2
+shift 2
+dataset=""
+experiment=""
+overwrite=false
+figures_only=false
+methods=""
+ground_truth=""
+copy_from=""
+indexes=""
+positional=()
+script_option_seen=false
+while (( $# > 0 )); do
+    case $1 in
+        -h|--help) echo "$usage"; exit 0 ;;
+        -d|--dataset) script_option=d ;;
+        -e|--experiment) script_option=e ;;
+        -o|--overwrite) script_option=o ;;
+        -f|--figures-only) script_option=f ;;
+        -m|--methods) script_option=m ;;
+        -g|--ground-truth) script_option=g ;;
+        -c|--copy-from) script_option=c ;;
+        -i|--indexes) script_option=i ;;
+        -*) echo -e "Unknown option $1\n\n$usage" >&2; exit 1 ;;
+        *)
+            if [[ $script_option_seen == true ]]; then
+                echo -e "Unexpected argument $1 after the options\n\n$usage" >&2
+                exit 1
+            fi
+            positional+=("$1")
+            shift
+            continue
+            ;;
+    esac
+    script_option_seen=true
+    if [[ $script_options != *$script_option* ]]; then
+        echo -e "$(basename "$0") takes no option $1\n\n$usage" >&2
+        exit 1
+    fi
+    case $script_option in
+        d|e|m|g|c|i)
+            if (( $# < 2 )) || [[ $2 == "" || $2 == -* ]]; then
+                echo -e "Option $1 needs a value\n\n$usage" >&2
+                exit 1
+            fi
+            case $script_option in
+                d) dataset=$2 ;;
+                e) experiment=$2 ;;
+                m) methods=$2 ;;
+                g) ground_truth=$2 ;;
+                c) copy_from=$2 ;;
+                i) indexes=$2 ;;
+            esac
+            shift 2
+            ;;
+        o) overwrite=true; shift ;;
+        f) figures_only=true; shift ;;
+    esac
+done
+if (( ${#positional[@]} > script_positional )); then
+    echo -e "Unexpected argument ${positional[$script_positional]}\n\n$usage" >&2
+    exit 1
+fi
+if [[ $script_options == *e* && -z $experiment ]]; then
+    echo -e "No experiment given (-e)\n\n$usage" >&2
+    exit 1
+fi
+unset script_options script_positional script_option script_option_seen

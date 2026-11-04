@@ -1,0 +1,391 @@
+#!/bin/bash
+
+# Default Directories, Files and State
+main_program="rn_obj_search" # Must match CMakeLists.txt
+main_program_stats="${main_program}_stats" # Must match CMakeLists.txt
+main_program_par="${main_program}_par" # Must match CMakeLists.txt, and only for untimed parallel builds: the parameter-test SUL-Trees and PHL with phl=p
+exe_path="/path/to/build/directory"
+output_path="/path/to/experiment/directory"
+idx_dir="$output_path/indexes"
+stats_dir="$output_path/stats"
+obj_idx_dir="$output_path/obj_indexes"
+sets_dir="$output_path/query_sets"
+rw_poi_dir="$output_path/real_world_pois"
+data_dir="$output_path/data"
+fig_dir="$output_path/fig"
+fig_data_dir="$fig_dir/data"
+datasets_dir="datasets" # One config per dataset (network), with everything that may differ between datasets (see datasets/NW-t)
+
+# Paper Notation -> Script Notation
+# Some notations in the paper appear differently in the scripts, including:
+# sltree_fanout      -> b
+# sltree_maxleafsize -> alpha
+# colt_listsize      -> lambda
+# fkn                -> kFN (starts with f to distinguish it from knn in scripts)
+
+# Crops of the terrain and mesh downloads that transformInputData converts (data_dir/srtm, data_dir/dimacs10), as space-separated
+# <download>:<network>:<crop> entries. <download> is the download's name without its extensions, e.g. N39W107.SRTMGL1 for the SRTM
+# tile N39W107.SRTMGL1.hgt.zip or NACA0015 for the DIMACS10 mesh NACA0015.graph.bz2, and <network> names the crop's network (no "," or
+# "=", as the network is passed in parameter lists). A tile's crop is its first row, first column, rows and columns; a mesh's is the
+# minimum x, minimum y, maximum x and maximum y of the vertices kept. The whole download is converted into the network <download>.
+# Each network is converted only if a dataset config is built from it
+input_crops="N39W107.SRTMGL1:SRTM500:2500,1600,500,500 NACA0015:NACA330K:-0.1,-0.15,1.1,0.15"
+
+# Verification (ground truth checks of query results, see runVerification)
+verify_dir="$output_path/verification"
+verify_obj_idx_dir="$verify_dir/obj_indexes"
+verify_gt_dir="$verify_dir/ground_truth"
+verify_object_indexes="occ_list=0,rtree=1,obj_list=0,nvd=1,colt=1" # Object indexes "runVerification objects" copies from the experiment (built by buildDatasetIndexes and buildExperimentIndexes)
+verify_methods="" # Methods to verify: empty for those enabled in ${experiment}_methods, "all", or a comma-separated list
+verify_threads="" # OpenMP threads for the ground truth computation and the verify step's queries (empty for all)
+
+# Parameter testing (see runParameterExperiments): its SUL-Tree and COL-Tree variants are kept apart from the experiment indexes
+par_dir="$output_path/parameter_testing"
+par_idx_dir="$par_dir/indexes"
+par_obj_idx_dir="$par_dir/obj_indexes"
+
+# Index stats files
+idx_stats_file="index_stats.txt"
+obj_stats_file="obj_index_stats.txt"
+rw_obj_stats_file="rw_obj_index_stats.txt"
+
+# Query timing runs (run*QueryExperiments and the par_query_exp steps of runParameterExperiments) are pinned to this CPU core with
+# taskset, so that every run times its queries on the same core (unpinned, the scheduler picks the core per run, and a core that
+# services frequent device interrupts, e.g. a GPU's, runs queries slower). Pick a core without busy interrupts (/proc/interrupts) whose
+# SMT sibling, if any, is idle (lscpu -e); timed runs started at the same time would share it. Empty runs unpinned
+pin_core="2"
+pin_cmd=""
+if [[ -n "$pin_core" ]]; then
+    pin_cmd="taskset -c $pin_core"
+fi
+
+# Usage: . globalVariables [experiment] [--quiet_globalVariables] [network]
+#   experiment: query type for the experiments, "knn" (k Nearest Neighbors), "aknn" (Aggregate kNN), "fkn" (k Farthest Neighbors)
+#               or "range" (Range Queries); "" or omitted for the scripts that the experiment does not affect
+#   --quiet_globalVariables: suppress printing the experimental setting (pass "" to print it when a network follows), for scripts
+#                            that the experiment does not affect
+#   network: a dataset that overrides default_network below, for scripts that take one as an argument
+# Note: The dataset config of the network (datasets/<network>) sets the experiments it runs, the index parameters they share and,
+#       for each, its own index parameters, the query settings and the query counts. A sourced file sees the caller's own positional
+#       parameters when it is given none, so scripts that take command-line arguments must pass the experiment (or "") explicitly
+quiet_setting=false
+if [[ ${2:-} == "--quiet_globalVariables" ]]; then
+    quiet_setting=true
+fi
+
+# Methods of each experiment
+knn_methods="ine=0,gtree=0,ier_phl=1,ol_phl=0,nvd_phl=1,llb_phl=0,colt_phl=1"
+aknn_methods="ier_phl=1,nvd_phl=1,colt_phl=1"
+fkn_methods="ine=0,llb_phl=1,colt_phl=1"
+range_methods="ine=0,ier_phl=1,nvd_phl=1,colt_phl=1"
+
+# Dataset
+default_network="USA-t"
+if [[ ${3:-} != "" ]]; then
+    default_network=$3 # Network given to the calling script (see Usage above)
+fi
+# Indexes that buildDatasetIndexes builds for each dataset, those its experiments share (with its dataset_index_parameters): 1 builds
+# the index, 0 skips it, and its -i option builds only the indexes it lists; phl=p builds PHL with several threads (rn_obj_search_par)
+# for networks on which it takes long, with slightly different labels and no recorded construction time. buildExperimentIndexes
+# builds each experiment's SUL-Tree and COL-Trees
+dataset_indexes="gtree=0,phl=1,alt=1,occ_list=0,rtree=1,obj_list=0,nvd=1"
+
+# Object set type and variable of every experiment
+knn_def_type="random" # Default Object Set Type
+knn_def_var="1" # Default Object Variable (placeholder in case it is needed in future)
+aknn_def_type=$knn_def_type
+aknn_def_var=$knn_def_var
+fkn_def_type="random"
+fkn_def_var="1"
+range_def_type="random"
+range_def_var="1"
+
+# Seed of the query and object sets (generateQuerySets, generateObjectSets): each set file is drawn from it and the parameters in the
+# file's name, so the same seed generates the same sets of a dataset. Another seed generates other sets, which invalidates the object
+# indexes built from the previous ones (see generateObjectSets -o)
+set_seed="0"
+
+# Prints the value of key $2 in the comma-separated "key=value" list $1
+get_param() {
+    local pair pairs
+    IFS=, read -ra pairs <<< "$1"
+    for pair in "${pairs[@]}"; do
+        [[ "${pair%%=*}" == "$2" ]] && { echo "${pair#*=}"; return; }
+    done
+}
+
+# Settings of a dataset config: the dataset's own, and those of each experiment it runs (prefixed with the experiment's name)
+dataset_settings="network edge_type rw_sets experiments densities dataset_index_parameters sdl_index_parameters par_tests"
+declare -A experiment_settings=(
+    [knn]="index_parameters obj_index_parameters lists def_k kvalues def_density num_sets num_qv"
+    [aknn]="index_parameters obj_index_parameters lists def_k kvalues def_density qv_def_setsize qv_setsizes qv_def_setsubnetsize qv_setsubnetsizes num_sets num_qv_sets"
+    [fkn]="index_parameters obj_index_parameters lists def_k kvalues def_density num_sets num_qv"
+    [range]="index_parameters obj_index_parameters lists def_range rangevalues def_density num_sets num_qv"
+)
+# Parameter test settings, which a dataset config sets if it runs the parameter tests (par_tests=1), with par_<experiment>_defaults
+# for each experiment it runs
+parameter_test_settings="par_fanouts par_numlmks par_min_lambda par_colt_lambdas"
+# Query lists of each experiment, which a dataset config switches on (1) or off (0) in <experiment>_lists
+declare -A experiment_lists=(
+    [knn]="varyingk varyingdensity varyingrwset"
+    [aknn]="varyingk varyingdensity varyingqvsetsize varyingqvsetsubnetsize varyingrwset"
+    [fkn]="varyingk varyingdensity varyingrwset"
+    [range]="varyingrange varyingdensity varyingrwset"
+)
+
+# Dataset config of the network. Its settings are cleared first, so that none is left over from another network's config
+dataset_config="$datasets_dir/$default_network"
+if [[ ! -f $dataset_config ]]; then
+    echo "ERROR: Network $default_network has no dataset config $dataset_config" >&2
+    exit 1
+fi
+unset $dataset_settings $parameter_test_settings
+for dataset_experiment in "${!experiment_settings[@]}"; do
+    for dataset_setting in ${experiment_settings[$dataset_experiment]}; do
+        unset "${dataset_experiment}_$dataset_setting"
+    done
+    unset "par_${dataset_experiment}_defaults"
+done
+. "$dataset_config"
+
+# Exits unless index parameter setting $1 of the dataset config sets exactly the keys in $2: the G-tree, ALT and R-tree parameters,
+# which the experiments share, go in dataset_index_parameters, and the SUL-Tree and COL-Tree parameters in each experiment's settings
+check_index_parameters() {
+    local pair pairs key hint="the G-tree, ALT and R-tree parameters, which the experiments share, go in dataset_index_parameters"
+    if [[ $1 == "dataset_index_parameters" ]]; then
+        hint="the SUL-Tree and COL-Tree parameters go in <experiment>_index_parameters and <experiment>_obj_index_parameters"
+    fi
+    IFS=, read -ra pairs <<< "${!1}"
+    for pair in "${pairs[@]}"; do
+        if [[ " $2 " != *" ${pair%%=*} "* ]]; then
+            echo "ERROR: $1 in $dataset_config sets ${pair%%=*}, which it does not take (it takes $2; $hint)" >&2
+            exit 1
+        fi
+    done
+    for key in $2; do
+        if [[ -z "$(get_param "${!1}" $key)" ]]; then
+            echo "ERROR: $1 in $dataset_config does not set $key" >&2
+            exit 1
+        fi
+    done
+}
+
+# Dataset config checks: every setting is set (only the real-world POI sets and the SDL experiment's parameters may be empty), each
+# index parameter is in the setting of its scope, the edge type and experiments are known, each default density is one of the
+# densities, every query list of an experiment is switched on or off (and no other), a real-world list is only switched on with
+# real-world POI sets, and the parameter test settings are set if the dataset runs the parameter tests
+for dataset_setting in $dataset_settings; do
+    if [[ ! -v $dataset_setting || ( -z ${!dataset_setting} && $dataset_setting != rw_sets && $dataset_setting != sdl_index_parameters ) ]]; then
+        echo "ERROR: $dataset_config does not set $dataset_setting" >&2
+        exit 1
+    fi
+done
+check_index_parameters dataset_index_parameters "gtree_fanout gtree_maxleafsize alt_numlandmarks alt_landmarktype rtree_branchfactor"
+if [[ $edge_type != "t" && $edge_type != "d" ]]; then
+    echo "ERROR: Unrecognised edge type $edge_type in $dataset_config, must be \"t\" (travel time) or \"d\" (distance)" >&2
+    exit 1
+fi
+IFS=',' read -ra dataset_experiments <<< "$experiments"
+for dataset_experiment in "${dataset_experiments[@]}"; do
+    if [[ ! -v experiment_settings[$dataset_experiment] ]]; then
+        echo "ERROR: Invalid experiment $dataset_experiment in $dataset_config, must be one of: aknn, fkn, range, or knn" >&2
+        exit 1
+    fi
+    for dataset_setting in ${experiment_settings[$dataset_experiment]}; do
+        dataset_setting="${dataset_experiment}_$dataset_setting"
+        if [[ -z ${!dataset_setting:-} ]]; then
+            echo "ERROR: $dataset_config runs $dataset_experiment but does not set $dataset_setting" >&2
+            exit 1
+        fi
+    done
+    check_index_parameters "${dataset_experiment}_index_parameters" "sltree_fanout sltree_maxleafsize sltree_numlmks sltree_lmktype"
+    check_index_parameters "${dataset_experiment}_obj_index_parameters" "colt_listsize"
+    dataset_setting="${dataset_experiment}_def_density"
+    if [[ ",$densities," != *",${!dataset_setting},"* ]]; then
+        echo "ERROR: $dataset_setting=${!dataset_setting} is not one of the densities in $dataset_config" >&2
+        exit 1
+    fi
+    dataset_setting="${dataset_experiment}_lists"
+    for dataset_list in ${experiment_lists[$dataset_experiment]}; do
+        if [[ "$(get_param "${!dataset_setting}" $dataset_list)" != "0" && "$(get_param "${!dataset_setting}" $dataset_list)" != "1" ]]; then
+            echo "ERROR: $dataset_setting in $dataset_config must switch $dataset_list on (1) or off (0)" >&2
+            exit 1
+        fi
+    done
+    IFS=',' read -ra dataset_lists <<< "${!dataset_setting}"
+    for dataset_list in "${dataset_lists[@]}"; do
+        if [[ " ${experiment_lists[$dataset_experiment]} " != *" ${dataset_list%%=*} "* ]]; then
+            echo "ERROR: Unknown query list ${dataset_list%%=*} in $dataset_setting in $dataset_config, must be one of: ${experiment_lists[$dataset_experiment]}" >&2
+            exit 1
+        fi
+    done
+    if [[ "$(get_param "${!dataset_setting}" varyingrwset)" == "1" && -z $rw_sets ]]; then
+        echo "ERROR: $dataset_config switches on the real-world list in $dataset_setting but has no real-world POI sets (rw_sets)" >&2
+        exit 1
+    fi
+done
+if [[ $par_tests != "0" && $par_tests != "1" ]]; then
+    echo "ERROR: par_tests in $dataset_config must be 1 (run the parameter tests) or 0" >&2
+    exit 1
+fi
+if [[ $par_tests == "1" ]]; then
+    for dataset_setting in $parameter_test_settings $(for dataset_experiment in "${dataset_experiments[@]}"; do echo "par_${dataset_experiment}_defaults"; done); do
+        if [[ -z ${!dataset_setting:-} ]]; then
+            echo "ERROR: $dataset_config runs the parameter tests (par_tests=1) but does not set $dataset_setting" >&2
+            exit 1
+        fi
+    done
+fi
+unset dataset_experiment dataset_setting dataset_list dataset_lists
+unset -f check_index_parameters
+
+# Experiment of the script: the first argument given to this file (the script's -e, or its own query type), none for the scripts that
+# the experiment does not affect
+experiment="${1:-}"
+if [[ $experiment == "aknn" ]]; then
+    experiment_name="Aggregate k Nearest Neighbor Queries"
+elif [[ $experiment == "fkn" ]]; then
+    experiment_name="k Farthest Neighbor Queries"
+elif  [[ $experiment == "range" ]]; then
+    experiment_name="Range Queries"
+elif [[ $experiment == "knn" ]]; then
+    experiment_name="k Nearest Neighbor Queries"
+elif [[ -n $experiment ]]; then
+    echo "ERROR: Invalid experiment $experiment, must be one of: aknn, fkn, range, or knn"  >&2
+    exit 1
+fi
+if [[ $quiet_setting == false && ",$experiments," != *",$experiment,"* ]]; then
+    echo "ERROR: $default_network does not run the $experiment experiment (experiments=\"$experiments\" in $dataset_config)" >&2
+    exit 1
+fi
+
+# Object sets: the densities' figure labels, and the number of sets per density (the largest of the dataset's experiments)
+densities_xtics=""
+IFS=',' read -ra dataset_densities <<< "$densities"
+for dataset_density in "${dataset_densities[@]}"; do
+    densities_xtics="${densities_xtics:+$densities_xtics:}$(printf "%.5f" "$dataset_density")"
+done
+unset dataset_densities dataset_density
+num_sets=0
+for dataset_experiment in "${dataset_experiments[@]}"; do
+    dataset_setting="${dataset_experiment}_num_sets"
+    if [[ ${!dataset_setting} -gt $num_sets ]]; then
+        num_sets=${!dataset_setting}
+    fi
+done
+unset dataset_experiment dataset_setting
+
+# Experiment header: the experiment and the network's SUL-Tree/COL-Tree parameters. Scripts that the experiment does not
+# affect suppress it by passing --quiet_globalVariables as the second argument
+if [[ $quiet_setting == false ]]; then
+    header_index_parameters="${experiment}_index_parameters"
+    header_obj_index_parameters="${experiment}_obj_index_parameters"
+    echo "### Experimental Setting: $experiment_name ###"
+    echo "SUL-Tree/COL-Tree parameters for $default_network:"
+    echo "   Fanout (b): $(get_param "${!header_index_parameters:-}" sltree_fanout)"
+    echo "   Max Leaf Size: $(get_param "${!header_index_parameters:-}" sltree_maxleafsize)"
+    echo "   # of Landmarks (m): $(get_param "${!header_index_parameters:-}" sltree_numlmks)"
+    echo "   Landmark Type: $(get_param "${!header_index_parameters:-}" sltree_lmktype)"
+    echo "   Lambda: $(get_param "${!header_obj_index_parameters:-}" colt_listsize)"
+    echo
+    unset header_index_parameters header_obj_index_parameters
+fi
+
+# Settings derived from the dataset config for each experiment it runs
+if [[ ",$experiments," == *",knn,"* ]]; then
+    knn_kvalues_xtics=${knn_kvalues//,/:}
+    knn_densities=$densities
+    knn_densities_xtics=$densities_xtics
+    knn_pts_filename="$(printf "%03d" $knn_num_qv)"
+    knn_rw_num_qv=$((knn_num_sets*knn_num_qv)) # Real-world experiments use this many query vertices to match the number of synthetic queries
+    knn_rw_pts_filename="rw_$(printf "%05d" $knn_rw_num_qv)"
+    knn_varyingk="$(get_param "$knn_lists" varyingk)" # Query list switches
+    knn_varyingdensity="$(get_param "$knn_lists" varyingdensity)"
+    knn_rw="$(get_param "$knn_lists" varyingrwset)"
+    knn_query_parameters="$knn_methods,knn_def_k=$knn_def_k,knn_def_density=$knn_def_density,knn_def_type=$knn_def_type,knn_def_var=$knn_def_var,knn_rw=$knn_rw,\
+knn_varyingk=$knn_varyingk,knn_varyingdensity=$knn_varyingdensity"
+
+    # Stats Output Filenames
+    knn_varyingk_stats_file_suffix="knn_varyingk_density-${knn_def_density}_type-${knn_def_type}"
+    knn_varyingdensity_stats_file_suffix="knn_varyingdensity_k-${knn_def_k}_type-${knn_def_type}"
+    knn_varyingrwset_stats_file_suffix="knn_varyingrwset_k-${knn_def_k}_type-rw"
+fi
+
+if [[ ",$experiments," == *",aknn,"* ]]; then
+    aknn_kvalues_xtics=${aknn_kvalues//,/:}
+    aknn_densities=$densities
+    aknn_densities_xtics=$densities_xtics
+    aknn_qv_max_setsize=0 # The largest number of query vertices in a set
+    IFS=',' read -ra aknn_qv_setsizes_list <<< "$aknn_qv_setsizes"
+    for aknn_qv_setsize in "${aknn_qv_setsizes_list[@]}"; do
+        if [[ $aknn_qv_setsize -gt $aknn_qv_max_setsize ]]; then
+            aknn_qv_max_setsize=$aknn_qv_setsize
+        fi
+    done
+    unset aknn_qv_setsizes_list aknn_qv_setsize
+    if [[ $aknn_qv_def_setsize -gt $aknn_qv_max_setsize ]]; then # Its queries take the first vertices of each set of the largest size
+        echo "ERROR: aknn_qv_def_setsize=$aknn_qv_def_setsize is larger than the largest of aknn_qv_setsizes in $dataset_config" >&2
+        exit 1
+    fi
+    aknn_rw_num_qv_sets=$((aknn_num_sets*aknn_num_qv_sets)) # Real-world experiments use this many query vertex sets to match the number of synthetic queries
+    aknn_rw_qv_filename="subnet_${aknn_rw_num_qv_sets}_${aknn_qv_max_setsize}_${aknn_qv_def_setsubnetsize}" # Must match utility::constructQuerySetFileName
+    aknn_varyingk="$(get_param "$aknn_lists" varyingk)" # Query list switches
+    aknn_varyingdensity="$(get_param "$aknn_lists" varyingdensity)"
+    aknn_varyingqvsetsize="$(get_param "$aknn_lists" varyingqvsetsize)"
+    aknn_varyingqvsetsubnetsize="$(get_param "$aknn_lists" varyingqvsetsubnetsize)"
+    aknn_rw="$(get_param "$aknn_lists" varyingrwset)"
+    aknn_query_parameters="$aknn_methods,aknn_def_k=$aknn_def_k,aknn_def_density=$aknn_def_density,aknn_def_type=$aknn_def_type,aknn_def_var=$aknn_def_var,\
+aknn_rw=$aknn_rw,aknn_qv_def_setsize=$aknn_qv_def_setsize,aknn_qv_max_setsize=$aknn_qv_max_setsize,aknn_num_qv_sets=$aknn_num_qv_sets,\
+aknn_qv_def_setsubnetsize=$aknn_qv_def_setsubnetsize,aknn_varyingk=$aknn_varyingk,aknn_varyingdensity=$aknn_varyingdensity,aknn_varyingqvsetsize=$aknn_varyingqvsetsize,\
+aknn_varyingqvsetsubnetsize=$aknn_varyingqvsetsubnetsize"
+
+    # Stats Output Filenames
+    aknn_max_varyingk_stats_file_suffix="max_aknn_varyingk_density-${aknn_def_density}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_max_varyingdensity_stats_file_suffix="max_aknn_varyingdensity_k-${aknn_def_k}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_max_varyingrwset_stats_file_suffix="max_aknn_varyingrwset_k-${aknn_def_k}_type-rw_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_max_varyingqvsetsize_stats_file_suffix="max_aknn_varyingqvsetsize_k-${aknn_def_k}_density-${aknn_def_density}_type-${aknn_def_type}"
+    aknn_max_varyingqvsetsubnetsize_stats_file_suffix="max_aknn_varyingqvsetsubnetsize_k-${aknn_def_k}_density-${aknn_def_density}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+
+    aknn_sum_varyingk_stats_file_suffix="sum_aknn_varyingk_density-${aknn_def_density}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_sum_varyingdensity_stats_file_suffix="sum_aknn_varyingdensity_k-${aknn_def_k}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_sum_varyingrwset_stats_file_suffix="sum_aknn_varyingrwset_k-${aknn_def_k}_type-rw_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+    aknn_sum_varyingqvsetsize_stats_file_suffix="sum_aknn_varyingqvsetsize_k-${aknn_def_k}_density-${aknn_def_density}_type-${aknn_def_type}"
+    aknn_sum_varyingqvsetsubnetsize_stats_file_suffix="sum_aknn_varyingqvsetsubnetsize_k-${aknn_def_k}_density-${aknn_def_density}_type-${aknn_def_type}_qv-${aknn_qv_def_setsize}_subnet-${aknn_qv_def_setsubnetsize}"
+fi
+
+if [[ ",$experiments," == *",fkn,"* ]]; then
+    fkn_kvalues_xtics=${fkn_kvalues//,/:}
+    fkn_densities=$densities
+    fkn_densities_xtics=$densities_xtics
+    fkn_pts_filename="$(printf "%03d" $fkn_num_qv)"
+    fkn_rw_num_qv=$((fkn_num_sets*fkn_num_qv)) # Real-world experiments use this many query vertices to match the number of synthetic queries
+    fkn_rw_pts_filename="rw_$(printf "%05d" $fkn_rw_num_qv)"
+    fkn_varyingk="$(get_param "$fkn_lists" varyingk)" # Query list switches
+    fkn_varyingdensity="$(get_param "$fkn_lists" varyingdensity)"
+    fkn_rw="$(get_param "$fkn_lists" varyingrwset)"
+    fkn_query_parameters="$fkn_methods,fkn_def_k=$fkn_def_k,fkn_def_density=$fkn_def_density,fkn_def_type=$fkn_def_type,fkn_def_var=$fkn_def_var,fkn_rw=$fkn_rw,\
+fkn_varyingk=$fkn_varyingk,fkn_varyingdensity=$fkn_varyingdensity"
+
+    # Stats Output Filenames
+    fkn_varyingk_stats_file_suffix="fkn_varyingk_density-${fkn_def_density}_type-${fkn_def_type}"
+    fkn_varyingdensity_stats_file_suffix="fkn_varyingdensity_k-${fkn_def_k}_type-${fkn_def_type}"
+    fkn_varyingrwset_stats_file_suffix="fkn_varyingrwset_k-${fkn_def_k}_type-rw"
+fi
+
+if [[ ",$experiments," == *",range,"* ]]; then
+    range_densities=$densities
+    range_densities_xtics=$densities_xtics
+    range_pts_filename="$(printf "%03d" $range_num_qv)"
+    range_rw_num_qv=$((range_num_sets*range_num_qv)) # Real-world experiments use this many query vertices to match the number of synthetic queries
+    range_rw_pts_filename="rw_$(printf "%05d" $range_rw_num_qv)"
+    range_varyingrange="$(get_param "$range_lists" varyingrange)" # Query list switches
+    range_varyingdensity="$(get_param "$range_lists" varyingdensity)"
+    range_rw="$(get_param "$range_lists" varyingrwset)"
+    range_query_parameters="$range_methods,range_def_range=$range_def_range,range_def_density=$range_def_density,range_def_type=$range_def_type,range_def_var=$range_def_var,range_rw=$range_rw,\
+range_varyingrange=$range_varyingrange,range_varyingdensity=$range_varyingdensity"
+
+    # Stats Output Filenames
+    range_varyingrange_stats_file_suffix="range_varyingrange_density-${range_def_density}_type-${range_def_type}"
+    range_varyingdensity_stats_file_suffix="range_varyingdensity_k-${range_def_range}_type-${range_def_type}"
+    range_varyingrwset_stats_file_suffix="range_varyingrwset_k-${range_def_range}_type-rw"
+fi

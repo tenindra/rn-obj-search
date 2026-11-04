@@ -1,0 +1,144 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash buildDatasetIndexes [-d datasets] [-i indexes] [-o]
+Builds the indexes that a dataset's experiments share, with its dataset_index_parameters: the road network indexes enabled in
+dataset_indexes (globalVariables), then its object indexes for the object sets, which must already exist (bash generateObjectSets),
+and for the real-world POI sets if any of the dataset's experiments runs its real-world list. buildExperimentIndexes builds the
+indexes of each experiment (its SUL-Tree and COL-Trees).
+  -d, --dataset    comma-separated datasets (default_network in globalVariables if omitted)
+  -i, --indexes    comma-separated indexes to build instead of those enabled in dataset_indexes: gtree, phl, alt, occ_list, rtree,
+                   obj_list or nvd (e.g. -i nvd rebuilds only the NVDs), or objects for the object indexes enabled in dataset_indexes
+                   (-i objects rebuilds them without the road network indexes, e.g. after generateObjectSets -o)
+  -o, --overwrite  start each dataset's object index stats file afresh (keeping the old one with a timestamp)"
+. scriptArguments dio 0 "$@"
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the indexes its dataset's experiments share
+
+# The indexes in the order they are built: an object index after the road network index it is built from (occ_list from gtree,
+# obj_list from alt)
+road_indexes="gtree phl alt"
+object_indexes="occ_list rtree obj_list nvd"
+declare -A built_from=([occ_list]="gtree" [obj_list]="alt")
+
+IFS=',' read -ra listed_indexes <<< "$indexes"
+indexes="" # The listed indexes, with objects replaced by the object indexes enabled in dataset_indexes
+for index in "${listed_indexes[@]}"; do
+    if [[ $index == "objects" ]]; then
+        enabled_object_indexes=""
+        for object_index in $object_indexes; do
+            if [[ "$(get_param "$dataset_indexes" $object_index)" == "1" ]]; then
+                enabled_object_indexes="${enabled_object_indexes:+$enabled_object_indexes,}$object_index"
+            fi
+        done
+        if [[ -z $enabled_object_indexes ]]; then
+            echo "-i objects: no object index is enabled in dataset_indexes (globalVariables)" >&2
+            exit 1
+        fi
+        indexes="${indexes:+$indexes,}$enabled_object_indexes"
+    elif [[ " $road_indexes $object_indexes " != *" $index "* ]]; then
+        echo -e "Unknown index $index (-i takes ${road_indexes// /, }, ${object_indexes// /, } or objects)\n\n$usage" >&2
+        exit 1
+    else
+        indexes="${indexes:+$indexes,}$index"
+    fi
+done
+
+# Flag of each index in this run: its value in dataset_indexes (1 builds it, phl=p builds PHL with several threads), or with -i,
+# whether it is listed (PHL keeps p)
+declare -A build
+for index in $road_indexes $object_indexes; do
+    build[$index]=$(get_param "$dataset_indexes" $index)
+    if [[ -n $indexes ]]; then
+        if [[ ",$indexes," == *",$index,"* ]]; then
+            [[ ${build[$index]} == "p" ]] || build[$index]=1
+        else
+            build[$index]=0
+        fi
+    fi
+    build[$index]=${build[$index]:-0}
+done
+
+# Warn if a road network index is rebuilt but an object index built from it is not
+for index in "${!built_from[@]}"; do
+    if [[ ${build[${built_from[$index]}]} == "1" && ${build[$index]} != "1" && "$(get_param "$dataset_indexes" $index)" == "1" ]]; then
+        echo "WARNING: ${built_from[$index]} is rebuilt but $index, which is built from it, is not (bash buildDatasetIndexes -i $index)" >&2
+    fi
+done
+
+road_flags=""
+for index in $road_indexes; do
+    flag=${build[$index]}
+    if [[ $index == "phl" && $flag == "p" ]]; then
+        flag=0 # Built below with several threads
+    fi
+    road_flags="${road_flags:+$road_flags,}$index=$flag"
+done
+object_flags=""
+for index in $object_indexes; do
+    object_flags="${object_flags:+$object_flags,}$index=${build[$index]}"
+done
+
+networks=("$default_network")
+if [[ $dataset != "" ]]; then
+    IFS=',' read -ra networks <<< "$dataset"
+fi
+
+for i in "${!networks[@]}"; do
+    if (( i > 0 )); then
+        echo # Blank line before every network but the first
+    fi
+    dataset=${networks[$i]}
+    ( # A subshell per dataset, so that no setting of its dataset config carries over to the next dataset
+        . globalVariables "" --quiet_globalVariables "$dataset"
+
+        if [[ $road_flags == *=1* ]]; then
+            echo "Building the road network indexes for $dataset..."
+            args="-c lmk_exp -e indexes -g $idx_dir/$dataset.bin -p $road_flags,$dataset_index_parameters -f $output_path -s $stats_dir/$idx_stats_file"
+            #echo "${exe_path}/$main_program $args"
+            ${exe_path}/$main_program $args
+        fi
+
+        # phl=p: PHL is built by rn_obj_search_par with several threads instead, for networks on which PHL takes long; its labels
+        # differ slightly from rn_obj_search's (both are exact) and its construction time is not recorded. One thread per core by
+        # default (a core's second hardware thread does not help), or OMP_NUM_THREADS
+        if [[ ${build[phl]} == "p" ]]; then
+            echo "Building PHL for $dataset with several threads..."
+            args="-c lmk_exp -e indexes -g $idx_dir/$dataset.bin -p phl=1 -f $output_path -s $stats_dir/$idx_stats_file"
+            cores=$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)
+            OMP_NUM_THREADS=${OMP_NUM_THREADS:-$cores} OMP_PLACES=cores OMP_PROC_BIND=close ${exe_path}/$main_program_par $args
+        fi
+
+        if [[ $object_flags == *=1* ]]; then
+            if [[ $num_sets == 0 ]]; then
+                echo "num_sets is not set!"
+                exit 1
+            fi
+            echo "Building the object indexes for $dataset..."
+            obj_idx_stats_file_path="$stats_dir/${dataset}_$obj_stats_file"
+            if [[ $overwrite == true && -f "$obj_idx_stats_file_path" ]]; then
+                mv "$obj_idx_stats_file_path" "$stats_dir/${dataset}_${obj_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+            fi
+            # Note: The object sets and their densities are shared by the experiments the dataset runs
+            args="-c lmk_exp -e objects -g $idx_dir/$dataset.bin -n $num_sets -d $densities -t $knn_def_type -v $knn_def_var -p $object_flags,$dataset_index_parameters -f $output_path -s $obj_idx_stats_file_path"
+            #echo "${exe_path}/$main_program $args"
+            ${exe_path}/$main_program $args
+
+            # Real-world POI sets, if any of the dataset's experiments runs its real-world list
+            runs_rw_list=false
+            IFS=',' read -ra dataset_experiments <<< "$experiments"
+            for dataset_experiment in "${dataset_experiments[@]}"; do
+                dataset_experiment_rw="${dataset_experiment}_rw"
+                if [[ ${!dataset_experiment_rw} == "1" ]]; then
+                    runs_rw_list=true
+                fi
+            done
+            if [[ $runs_rw_list == true ]]; then
+                echo -e "\nBuilding the real-world object indexes for $dataset..."
+                args="-c lmk_exp -e rw_obj_idxs -g $idx_dir/$dataset.bin -p $object_flags,$dataset_index_parameters,rw_network=$network -f $output_path -s $stats_dir/$rw_obj_stats_file -r $rw_sets"
+                #echo "${exe_path}/$main_program $args"
+                ${exe_path}/$main_program $args
+            fi
+        fi
+    )
+done

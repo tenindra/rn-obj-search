@@ -1,0 +1,99 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runFarthestStatsExperiments [-d dataset] [-o] [-f]
+Runs the FkN query statistics experiments (rn_obj_search_stats) on the dataset and draws their figures.
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments dof 0 "$@"
+. globalVariables fkn "" "$dataset"
+
+# Experiment Setup
+
+# Varying K
+varyingk_stats_file="stats_${default_network}_$fkn_varyingk_stats_file_suffix.txt"
+varyingk_stats_file_path="$stats_dir/$varyingk_stats_file"
+if [ "$fkn_varyingk" == "1" ] && [ -f "$varyingk_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingk_stats_file_path" "$stats_dir/${varyingk_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingk_stats_file_path"
+    fi
+fi
+
+# Varying Density
+varyingdensity_stats_file="stats_${default_network}_$fkn_varyingdensity_stats_file_suffix.txt"
+varyingdensity_stats_file_path="$stats_dir/$varyingdensity_stats_file"
+if [ "$fkn_varyingdensity" == "1" ] && [ -f "$varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingdensity_stats_file_path" "$stats_dir/${varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingdensity_stats_file_path"
+    fi
+fi
+
+fkn_rw="0" # Don't run real-world experiments for stats collection
+fkn_methods="ine=0,llb_phl=1,colt_phl=1" # Don't run non multi-step methods for stats collection
+fkn_query_parameters="$fkn_methods,fkn_def_k=$fkn_def_k,fkn_def_density=$fkn_def_density,fkn_def_type=$fkn_def_type,fkn_def_var=$fkn_def_var,fkn_rw=$fkn_rw,fkn_varyingk=$fkn_varyingk,fkn_varyingdensity=$fkn_varyingdensity"
+
+varyingrwset_stats_file="stats_${default_network}_$fkn_varyingrwset_stats_file_suffix.txt" # Placeholder only
+
+index_parameters="fkn_index_parameters"
+obj_index_parameters="fkn_obj_index_parameters" # Part of the object index file names
+query_parameters="$dataset_index_parameters,${!index_parameters},${!obj_index_parameters},$fkn_query_parameters,fkn_varyingk_stats_file=$varyingk_stats_file,fkn_varyingdensity_stats_file=$varyingdensity_stats_file,fkn_varyingrwset_stats_file=$varyingrwset_stats_file"
+
+# Note: No '=' signs allowed in stats file names
+
+# Need to create a new file for second stat so we can exclude IER from it
+lbs_varyingk_stats_file_path="$stats_dir/lbs_$varyingk_stats_file"
+lbs_varyingdensity_stats_file_path="$stats_dir/lbs_$varyingdensity_stats_file"
+
+# Run Experiments
+args="-c lmk_farthest_exp -e query_exp -g $idx_dir/$default_network.bin -q $sets_dir/${default_network}_qv_$fkn_pts_filename.txt 
+-k $fkn_kvalues -n $fkn_num_sets -d $fkn_densities -t $fkn_def_type -v $fkn_def_var -p $query_parameters ${rw_sets:+-r $rw_sets} -f $output_path"
+    
+# echo "${exe_path}/$main_program $args"
+if [ "$figures_only" == false ]; then
+    ${exe_path}/$main_program_stats $args
+
+    # Fix stats files for future figure generation
+    if [ "$fkn_varyingk" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingk_stats_file"
+        cat $varyingk_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $varyingk_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$fkn_varyingdensity" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingdensity_stats_file"
+        cat $varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $varyingdensity_stats_file_path
+        rm $temp_file_path
+    fi
+
+    # Create Separate Stats File for Lower-Bound Computation Comparison
+    if [ "$fkn_varyingk" == "1" ]; then
+        cat $varyingk_stats_file_path |  bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingk_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$fkn_varyingdensity" == "1" ]; then
+        cat $varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingdensity_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+fi
+
+# Generate Figures
+# Varying K
+if [ "$fkn_varyingk" == "1" ]; then
+    varyingk_figure_file_prefix="cand_spdist_stats_${default_network}_$fkn_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $varyingk_stats_file_path "6,# of Results (k),$fkn_kvalues_xtics,'','',''" "13,Network Distances,logscale,'10^%T'" "AUB;dark-magenta;12,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingk_figure_file_prefix="cand_unpruned_stats_${default_network}_$fkn_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $lbs_varyingk_stats_file_path "6,# of Results (k),$fkn_kvalues_xtics,'','',''" "14,Candidates,logscale,'10^%T'" "AUB;dark-magenta;12,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+fi
+
+# Varying Density
+if [ "$fkn_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="cand_spdist_stats_${default_network}_$fkn_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $varyingdensity_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "13,Network Distances,logscale,'10^%T'" "AUB;dark-magenta;12,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingdensity_figure_file_prefix="cand_unpruned_stats_${default_network}_$fkn_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $lbs_varyingdensity_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "14,Candidates,logscale,'10^%T'" "AUB;dark-magenta;12,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+fi

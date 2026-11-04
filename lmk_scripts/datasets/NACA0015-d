@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# Dataset config of NACA0015-d: everything about the experiments that may differ between datasets. globalVariables sources it for the
+# dataset a script works on (default_network or the dataset the script is given), checks it and derives the remaining settings
+# (file names, figure labels, the query parameters passed to the binary). Every setting is written out; a new dataset starts
+# as a copy of an existing config. The file's name is the dataset's name, which names everything built for it: the binary graph
+# $idx_dir/<dataset>.bin, its indexes, object and query sets, stats files and figures
+#
+# NACA0015-d: the whole DIMACS10 NACA0015 airfoil mesh, 1,039,183 vertices (transformInputData), each edge weighted by its planar
+# length. It has no real-world POI sets
+
+network="NACA0015" # Input network: its text files are data_dir/<network>-<edge_type>.graph and .coordinates, its real-world POI sets
+             # are in real_world_pois/<network>; datasets with other names can share it (e.g. with other edge weights)
+edge_type="d" # Edge weights of the input text files: "t" travel time, "d" distance
+
+# Real-world POI sets: object set names (empty if the dataset has none)
+rw_sets=""
+
+experiments="fkn" # Experiments the dataset runs
+densities="0.1,0.01,0.001,0.0001" # Object set densities, shared by the experiments (each default density must be one of them)
+
+# Indexes the experiments share (buildDatasetIndexes): the G-tree, ALT and R-tree parameters. Each experiment sets its own
+# SUL-Tree and COL-Tree parameters (buildExperimentIndexes) in <experiment>_index_parameters and <experiment>_obj_index_parameters
+dataset_index_parameters="gtree_fanout=4,gtree_maxleafsize=256,alt_numlandmarks=16,alt_landmarktype=random,rtree_branchfactor=8"
+
+# SDL experiment (runSDLExperiment): the SUL-Tree parameters it builds with, which do not depend on the query experiments (empty if
+# the dataset does not run it)
+sdl_index_parameters=""
+
+# FkN
+fkn_index_parameters="sltree_fanout=4,sltree_maxleafsize=256,sltree_numlmks=4,sltree_lmktype=random"
+fkn_obj_index_parameters="colt_listsize=64"
+fkn_lists="varyingk=1,varyingdensity=1,varyingrwset=0" # Query lists to run (1) or skip (0)
+fkn_def_k="10"
+fkn_kvalues="1,5,10,25,50"
+fkn_def_density="0.001"
+fkn_num_sets="15" # Object sets per density
+fkn_num_qv="100" # Query vertices per object set
+
+# Parameter tests (runParameterExperiments)
+par_tests="0" # Run them on this dataset (1) or refuse them (0)

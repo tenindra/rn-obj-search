@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash generateObjectSets [-d datasets] [-o] [-c dataset]
+Generates the synthetic object sets (.txt files in obj_indexes) that buildDatasetIndexes, buildExperimentIndexes and
+runVerification build their object indexes from: num_sets sets for each density in each dataset's config. They are drawn
+from set_seed in globalVariables, so the same seed generates the same sets.
+  -d, --dataset    comma-separated datasets (default_network in globalVariables if omitted)
+  -o, --overwrite  replace object sets that already exist. Replacing them invalidates every object index built from the previous
+                   sets, so the script refuses without it; run buildDatasetIndexes -i objects and buildExperimentIndexes -i objects
+                   (and runVerification objects) again afterwards
+  -c, --copy-from  copy the object sets of this dataset instead of generating them. It must have the same vertex IDs and neighbours
+                   (e.g. the same network with other edge weights) and object sets of the same names; the binary checks both"
+. scriptArguments doc 0 "$@"
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the object sets
+
+# True if object index files for dataset $2 exist in directory $1
+obj_indexes_exist() {
+    [[ -n $(find "$1" -maxdepth 1 -name "$2_*" \( -name '*.rtree' -o -name '*.colt' -o -name '*.nvd' -o -name '*.obj_list' -o -name '*.occ_list' \) -print -quit 2>/dev/null) ]]
+}
+
+if [[ $num_sets == 0 ]]; then
+    echo "num_sets is not set!"
+    exit 1
+fi
+
+networks=("$default_network")
+if [[ $dataset != "" ]]; then
+    IFS=',' read -ra networks <<< "$dataset"
+fi
+
+# Existing object sets are only replaced with -o, as every object index built from them would be invalidated
+if [[ $overwrite == false ]]; then
+    for dataset in "${networks[@]}"; do
+        if compgen -G "$obj_idx_dir/${dataset}_${knn_def_type}_*.txt" > /dev/null; then
+            echo "ERROR: Object sets for $dataset already exist in $obj_idx_dir, and replacing them invalidates every object index built from them" >&2
+            echo "       Pass -o to replace them (bash generateObjectSets -o), then rebuild the object indexes (bash buildDatasetIndexes -i objects, and bash buildExperimentIndexes -e <experiment> -i objects for each experiment)" >&2
+            exit 1
+        fi
+    done
+fi
+
+for i in "${!networks[@]}"; do
+    if (( i > 0 )); then
+        echo # Blank line before every network but the first
+    fi
+    dataset=${networks[$i]}
+    ( # A subshell per dataset, so that no setting of its dataset config carries over to the next dataset
+        . globalVariables "" --quiet_globalVariables "$dataset"
+        copy_args=""
+        if [[ $copy_from != "" ]]; then
+            echo "Copying the object sets of $copy_from to $dataset..."
+            copy_args="-a $idx_dir/$copy_from.bin"
+        else
+            echo "Generating object sets for $dataset..."
+        fi
+        # Object indexes built from the previous object sets must be rebuilt (the verification keeps its own copies of the sets and queries)
+        if obj_indexes_exist "$obj_idx_dir" "$dataset"; then
+            echo "WARNING: Object indexes for $dataset in $obj_idx_dir were built from the previous object sets and must be rebuilt (bash buildDatasetIndexes -d $dataset -i objects, and bash buildExperimentIndexes -e <experiment> -d $dataset -i objects for each of $experiments)" >&2
+        fi
+        if obj_indexes_exist "$verify_obj_idx_dir" "$dataset"; then
+            echo "INFO: Verification object indexes for $dataset in $verify_obj_idx_dir are not affected (the verification keeps its own copies of the object sets and queries); run bash runVerification all -e <experiment> to verify against the new sets"
+        fi
+        # Same sets as buildDatasetIndexes and buildExperimentIndexes build indexes for; the INE baseline row goes to the dataset's object
+        # index stats file
+        obj_idx_stats_file_path="$stats_dir/${dataset}_$obj_stats_file"
+        args="-c lmk_exp -e objects -g $idx_dir/$dataset.bin -n $num_sets -d $densities -t $knn_def_type -v $knn_def_var -p obj_sets=1,set_seed=$set_seed,occ_list=0,rtree=0,obj_list=0,nvd=0,colt=0 -f $output_path -s $obj_idx_stats_file_path"
+        #echo "${exe_path}/$main_program $args"
+        ${exe_path}/$main_program $args $copy_args
+    )
+done

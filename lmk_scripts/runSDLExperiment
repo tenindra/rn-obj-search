@@ -1,0 +1,35 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runSDLExperiment [-d dataset]
+Times the subgraph distance list (SDL) computation of the SUL-Tree's non-root nodes with each method, with the dataset's SDL
+SUL-Tree parameters (sdl_index_parameters in its config), which do not depend on the query experiments.
+  -d, --dataset     the dataset (default_network in globalVariables if omitted)"
+. scriptArguments d 0 "$@"
+. globalVariables "" --quiet_globalVariables "$dataset"
+
+# Times the subgraph distance list (SDL) computation of the SUL-Tree's non-root nodes with each method: SDL construction with Dijkstra
+# using hash table, with Dijkstra without hash table, and with border-vertex-restricted-Dijkstra without hash table (the method of the
+# index). Prints the SDL computation time, the search spillover (gamma) and the index size of each (and the index size with the vertex
+# node positions an index without the subgraph vertex ordering would need), and records them with the other phase times as one row
+# per method in stats/<network>_sdl_stats.txt. All three builds select the same landmarks (fixed seed), so the first two have the same spillover.
+# Nothing is saved. The partition with the SDL fanout and maximum leaf size is built first if it does not exist yet (as buildPartitions
+# builds the query experiments' partitions).
+
+if [[ -z $sdl_index_parameters ]]; then
+    echo "ERROR: $default_network does not run the SDL experiment (sdl_index_parameters is empty in $dataset_config)" >&2
+    exit 1
+fi
+fanout=$(get_param "$sdl_index_parameters" sltree_fanout)
+maxleafsize=$(get_param "$sdl_index_parameters" sltree_maxleafsize)
+partition_file="$idx_dir/${default_network}_fanout=${fanout}_maxleafsize=${maxleafsize}.partition"
+if [[ ! -f "$partition_file" ]]; then
+    echo "Building partition for $default_network..."
+    args="-c lmk_exp -e partitions -g $idx_dir/$default_network.bin -p sltree=1,$sdl_index_parameters -f $output_path -s $stats_dir/$idx_stats_file"
+    ${exe_path}/$main_program $args
+fi
+echo "Running the SDL experiment for $default_network ($sdl_index_parameters)..."
+args="-c lmk_exp -e sdl_exp -g $idx_dir/$default_network.bin -p $sdl_index_parameters -f $output_path -s $stats_dir/${default_network}_sdl_stats.txt"
+#echo "${exe_path}/$main_program $args"
+${exe_path}/$main_program $args

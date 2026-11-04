@@ -1,0 +1,1287 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runParameterExperiments <mode> [-o] [-f] [-d dataset]
+Runs the parameter tests of the dataset (par_tests=1 and the other par_* settings in its config).
+  mode                build_rn (the SUL-Trees), build_<experiment>_obj (the COL-Trees) or <experiment> (the query tests), where
+                      <experiment> is knn, aknn, fkn or range
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp (not build_rn)
+  -f, --figures-only  draw the figures from the existing stats files, without building or running anything (not build_rn)
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)"
+. scriptArguments ofd 1 "$@"
+mode=${positional[0]:-}
+if [[ $mode == "" ]]; then
+    echo -e "No mode given\n\n$usage" >&2
+    exit 1
+fi
+. globalVariables "" --quiet_globalVariables "$dataset"
+
+# The tested dataset's parameter test settings (par_* in its dataset config): the values the tests sweep, and the default parameters
+# of each experiment's tests (printed below)
+if [[ $par_tests != "1" ]]; then
+    echo "ERROR: The parameter tests do not run on $default_network (par_tests=$par_tests in its dataset config)" >&2
+    exit 1
+fi
+
+# Notes:
+# - build_obj assumes that object sets for all densities have been generated (up to num_sets)
+# - knn/aknn/fkn/range assumes that object vertex sets for all densities + query vertex set has been generated
+# - SUL-Tree and COL-Tree variants are written to par_dir (globalVariables); PHL, ALT and the object sets are read from the experiment directories
+
+modes="build_rn, build_aknn_obj, build_fkn_obj, build_range_obj, build_knn_obj, aknn, fkn, range, knn"
+
+test_road_networks=("$default_network")
+fanouts=("$par_fanouts")
+numlmks=("$par_numlmks")
+
+landmark_types="border_minmax,furthest_border,random,slice_furthest" # Must be alphabetic order to match sort later
+landmark_types_labels="Border Minmax,Farthest Border,Random,Slice" # Must be alphabetic order to match sort later
+
+min_sltree_lambda=("$par_min_lambda")
+colt_lambdas=("$par_colt_lambdas")
+
+empty_plotlines=("LINE_NAME;dark-magenta;12"
+                 "LINE_NAME;black;3"
+                 "LINE_NAME;dark-green;6"
+                 "LINE_NAME;dark-red;4"
+                 "LINE_NAME;blue;8")
+
+# The experiment of the mode, which the dataset must run (build_rn builds the SUL-Trees, which do not depend on one)
+case $mode in
+    build_knn_obj|knn) mode_experiment="knn" ;;
+    build_aknn_obj|aknn) mode_experiment="aknn" ;;
+    build_fkn_obj|fkn) mode_experiment="fkn" ;;
+    build_range_obj|range) mode_experiment="range" ;;
+    *) mode_experiment="" ;;
+esac
+if [[ -n $mode_experiment && ",$experiments," != *",$mode_experiment,"* ]]; then
+    echo "ERROR: $default_network does not run the $mode_experiment experiment (experiments=\"$experiments\" in its dataset config)" >&2
+    exit 1
+fi
+
+if [[ $mode == "build_aknn_obj" ]] || [[ $mode == "aknn" ]]; then
+    # Defaults AkNN
+    par_def_fanout=$(get_param "$par_aknn_defaults" fanout)
+    par_def_numlmks=$(get_param "$par_aknn_defaults" numlmks)
+    par_def_lmktype=$(get_param "$par_aknn_defaults" lmktype)
+    par_def_lambda=$(get_param "$par_aknn_defaults" lambda)
+    par_aknn_def_agg_func="max"
+    echo "Default Parameters for AkNN:"
+    echo "   Fanout (b): $par_def_fanout" 
+    echo "   # of Landmarks (m): $par_def_numlmks"
+    echo "   Landmark Type: $par_def_lmktype"
+    echo "   Lambda: $par_def_lambda"
+    echo -e "   Aggregate Function: $par_aknn_def_agg_func\n"
+
+elif [[ $mode == "build_knn_obj" ]] || [[ $mode == "knn" ]]; then
+    # Defaults kNN
+    par_def_fanout=$(get_param "$par_knn_defaults" fanout)
+    par_def_numlmks=$(get_param "$par_knn_defaults" numlmks)
+    par_def_lmktype=$(get_param "$par_knn_defaults" lmktype)
+    par_def_lambda=$(get_param "$par_knn_defaults" lambda)
+
+    echo "Default Parameters for kNN:"
+    echo "   Fanout (b): $par_def_fanout" 
+    echo "   # of Landmarks (m): $par_def_numlmks"
+    echo "   Landmark Type: $par_def_lmktype"
+    echo -e "   Lambda: $par_def_lambda\n"
+
+elif [[ $mode == "build_fkn_obj" ]] || [[ $mode == "fkn" ]]; then
+    # Defaults FkN
+    par_def_fanout=$(get_param "$par_fkn_defaults" fanout)
+    par_def_numlmks=$(get_param "$par_fkn_defaults" numlmks)
+    par_def_lmktype=$(get_param "$par_fkn_defaults" lmktype)
+    par_def_lambda=$(get_param "$par_fkn_defaults" lambda)
+
+    echo "Default Parameters for FkN:"
+    echo "   Fanout (b): $par_def_fanout" 
+    echo "   # of Landmarks (m): $par_def_numlmks"
+    echo "   Landmark Type: $par_def_lmktype"
+    echo -e "   Lambda: $par_def_lambda\n"
+
+elif [[ $mode == "build_range_obj" ]] || [[ $mode == "range" ]]; then
+    # Defaults Range
+    par_def_fanout=$(get_param "$par_range_defaults" fanout)
+    par_def_numlmks=$(get_param "$par_range_defaults" numlmks)
+    par_def_lmktype=$(get_param "$par_range_defaults" lmktype)
+    par_def_lambda=$(get_param "$par_range_defaults" lambda)
+
+    echo "Default Parameters for Range:"
+    echo "   Fanout (b): $par_def_fanout" 
+    echo "   # of Landmarks (m): $par_def_numlmks"
+    echo "   Landmark Type: $par_def_lmktype"
+    echo "   Lambda: $par_def_lambda"
+    echo -e "   Object Set Density: $range_def_density\n"
+
+else
+    if [[ $mode != "build_rn" ]]; then
+        echo "Invalid mode $mode, must be one of: $modes"
+        exit 1
+    fi
+    # Query defaults are not used when building road network indexes
+    par_def_fanout=""
+    par_def_numlmks=""
+    par_def_lmktype=""
+    par_def_lambda=""
+fi
+
+# Create xtics and plotlines for each road network
+fanouts_xtics=()
+numlmks_xtics=()
+colt_lambdas_plotlines=()
+numlmks_plotlines=()
+for i in "${!test_road_networks[@]}"; do 
+    # Fanout xtics
+    temp_str=${fanouts[i]}
+    xtics=${temp_str//,/:}
+    fanouts_xtics+=("$xtics")
+
+    # Num landmarks xtics
+    temp_str=${numlmks[i]}
+    xtics=${temp_str//,/:}
+    numlmks_xtics+=("$xtics")
+
+    # Lambda plotlines
+    IFS=',' read -r -a lambdas_array <<< "${colt_lambdas[$i]}"
+    plotlines_str=""
+    for j in "${!lambdas_array[@]}"; do
+        temp_str=${empty_plotlines[j]}
+        line_title="{/Symbol l}=${lambdas_array[$j]}"
+        curr_line_str=${temp_str//"LINE_NAME"/$line_title} 
+        if [ $j != 0 ]; then
+            plotlines_str="$plotlines_str,"
+        fi
+        plotlines_str="$plotlines_str$curr_line_str"
+    done
+    colt_lambdas_plotlines+=("$plotlines_str")
+
+    # Fanout plotlines
+    IFS=',' read -r -a fanouts_array <<< "${fanouts[$i]}"
+    plotlines_str=""
+    for j in "${!fanouts_array[@]}"; do
+        temp_str=${empty_plotlines[j]}
+        line_title="b=${fanouts_array[$j]}"
+        curr_line_str=${temp_str//"LINE_NAME"/$line_title} 
+        if [ $j != 0 ]; then
+            plotlines_str="$plotlines_str,"
+        fi
+        plotlines_str="$plotlines_str$curr_line_str"
+    done
+    fanouts_plotlines+=("$plotlines_str")
+
+
+    # Num landmarks plotlines
+    IFS=',' read -r -a numlmks_array <<< "${numlmks[$i]}"
+    plotlines_str=""
+    for j in "${!numlmks_array[@]}"; do
+        temp_str=${empty_plotlines[j]}
+        line_title="m=${numlmks_array[j]}"
+        curr_line_str=${temp_str//"LINE_NAME"/$line_title}
+        if [ $j != 0 ]; then
+            plotlines_str="$plotlines_str,"
+        fi
+        plotlines_str="$plotlines_str$curr_line_str"
+    done
+    numlmks_plotlines+=("$plotlines_str")
+done
+
+# Landmark types plotline (done outside loop because they are not road network dependent)
+IFS=',' read -r -a landmark_types_array <<< $landmark_types_labels
+landmark_types_plotlines=""
+for j in "${!landmark_types_array[@]}"; do
+    temp_str=${empty_plotlines[j]}
+    line_title="${landmark_types_array[j]}"
+    curr_line_str=${temp_str//"LINE_NAME"/$line_title}
+    if [ $j != 0 ]; then
+        landmark_types_plotlines="$landmark_types_plotlines,"
+    fi
+    landmark_types_plotlines="$landmark_types_plotlines$curr_line_str"
+done
+
+# Loads the dataset config of the i-th tested network ($1) and sets the defaults the tests of the mode's experiment pass to the binary
+# for it: parameters for the object index builds (with the experiment's default density) and the kNN tests, aknn_parameters,
+# fkn_parameters or range_parameters for the others
+load_test_network() {
+    . globalVariables "" --quiet_globalVariables "${test_road_networks[$1]}"
+    if [[ -z $mode_experiment ]]; then
+        return # build_rn passes no defaults
+    fi
+    # The dataset's ALT index (alt_* in its dataset_index_parameters), which the query tests load
+    local alt_parameters="alt_numlandmarks=$(get_param "$dataset_index_parameters" alt_numlandmarks),alt_landmarktype=$(get_param "$dataset_index_parameters" alt_landmarktype)"
+    local defaults="par_path=$par_dir,$alt_parameters,par_def_fanout=$par_def_fanout,par_def_numlmks=$par_def_numlmks,par_def_lmktype=$par_def_lmktype,par_def_lambda=$par_def_lambda"
+    local def_density="${mode_experiment}_def_density"
+    case $mode in
+        build_*_obj) parameters[$1]="$defaults,par_def_density=${!def_density},par_def_type=$knn_def_type,par_def_variable=$knn_def_var" ;;
+        knn) parameters[$1]="$defaults,par_def_knn_def_k=$knn_def_k,par_def_density=$knn_def_density,par_def_type=$knn_def_type,par_def_variable=$knn_def_var" ;;
+        aknn) aknn_parameters[$1]="$defaults,par_def_knn_def_k=$aknn_def_k,par_def_density=$aknn_def_density,par_def_type=$aknn_def_type,par_def_variable=$aknn_def_var,par_aknn_qv_def_setsize=$aknn_qv_def_setsize,par_aknn_qv_def_setsubnetsize=$aknn_qv_def_setsubnetsize,par_aknn_qv_max_setsize=$aknn_qv_max_setsize,par_aknn_num_qv_sets=$aknn_num_qv_sets" ;;
+        fkn) fkn_parameters[$1]="$defaults,par_def_fkn_def_k=$fkn_def_k,par_def_density=$fkn_def_density,par_def_type=$fkn_def_type,par_def_variable=$fkn_def_var" ;;
+        range) range_parameters[$1]="$defaults,par_def_range=$range_def_range,par_def_density=$range_def_density,par_def_type=$range_def_type,par_def_variable=$range_def_var" ;;
+    esac
+}
+parameters=()
+aknn_parameters=()
+fkn_parameters=()
+range_parameters=()
+
+
+# Note: num_sets is only used for object index construction (queries should use their own num sets)
+if [[ $num_sets == 0 ]]; then
+    echo "num_sets is not set!"
+    exit 1
+fi
+
+if [[ $mode == "build_rn" ]] || [[ $mode == "build_aknn_obj" ]] || [[ $mode == "build_knn_obj" ]] || [[ $mode == "build_fkn_obj" ]] || [[ $mode == "build_range_obj" ]] || [[ $mode == "aknn" ]] || [[ $mode == "knn" ]] || [[ $mode == "fkn" ]] || [[ $mode == "range" ]]; then
+    if [[ $mode == "build_rn" ]]; then
+        echo "Building road network indexes..."
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+            if (( i > 0 )); then
+                echo # Blank line before every network but the first
+            fi
+            echo "Building parameter testing road indexes for ${test_road_networks[$i]}..."
+
+            # Note: Road network index stats files are not clear (need to manually clear if creating figures)
+
+            # Note: rn_obj_search_par builds several SUL-Trees at once, each processing its tree nodes in parallel (threads chosen from the
+            # available cores and memory, OMP_NUM_THREADS caps them); the SUL-Tree construction times it records are not comparable to rn_obj_search's
+            args="-c lmk_exp -e par_indexes -g $idx_dir/${test_road_networks[$i]}.bin -p par_path=$par_dir -f $output_path -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -y $landmark_types"
+            # echo "${exe_path}/$main_program_par $args"
+            ${exe_path}/$main_program_par $args
+        done
+    fi
+    if [[ $mode == "build_aknn_obj" ]] || [[ $mode == "build_knn_obj" ]] || [[ $mode == "build_fkn_obj" ]] || [[ $mode == "build_range_obj" ]]; then
+        echo "Building object indexes..."
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+
+            ### Backup and clear stats files
+            fanout_vs_lambda_stats_file_suffix="parameter_fanout_vs_lambda_obj_idx"
+            numlmks_vs_lambda_stats_file_suffix="parameter_numlmks_vs_lambda_obj_idx"
+            numlmks_vs_lmktype_stats_file_suffix="parameter_numlmks_vs_lmktype_obj_idx"
+            density_vs_numlmks_stats_file_suffix="parameter_density_vs_numlmks_obj_idx"
+            density_vs_lmktype_stats_file_suffix="parameter_density_vs_lmktype_obj_idx"
+            density_vs_lambda_stats_file_suffix="parameter_density_vs_lambda_obj_idx"
+            density_vs_fanout_stats_file_suffix="parameter_density_vs_fanout_obj_idx"
+
+            # Fanout vs lambda experiment stats file setup
+            fanout_vs_lambda_stats_file="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix.txt"
+            fanout_vs_lambda_stats_file_path="$stats_dir/$fanout_vs_lambda_stats_file"
+            if [ -f "$fanout_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$fanout_vs_lambda_stats_file_path" "$stats_dir/${fanout_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$fanout_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},fanout_vs_lambda_stats_file_path=$fanout_vs_lambda_stats_file_path"
+
+            # Num landmarks vs lambda experiment stats file setup
+            numlmks_vs_lambda_stats_file="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix.txt"
+            numlmks_vs_lambda_stats_file_path="$stats_dir/$numlmks_vs_lambda_stats_file"
+            if [ -f "$numlmks_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lambda_stats_file_path" "$stats_dir/${numlmks_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},numlmks_vs_lambda_stats_file_path=$numlmks_vs_lambda_stats_file_path"
+
+            # Num landmarks vs landmark type experiment stats file setup
+            numlmks_vs_lmktype_stats_file="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix.txt"
+            numlmks_vs_lmktype_stats_file_path="$stats_dir/$numlmks_vs_lmktype_stats_file"
+            if [ -f "$numlmks_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lmktype_stats_file_path" "$stats_dir/${numlmks_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lmktype_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},numlmks_vs_lmktype_stats_file_path=$numlmks_vs_lmktype_stats_file_path"
+
+            # Density vs num landmarks experiment stats file setup
+            density_vs_numlmks_stats_file="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix.txt"
+            density_vs_numlmks_stats_file_path="$stats_dir/$density_vs_numlmks_stats_file"
+            if [ -f "$density_vs_numlmks_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_numlmks_stats_file_path" "$stats_dir/${density_vs_numlmks_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_numlmks_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_numlmks_stats_file_path=$density_vs_numlmks_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_lmktype_stats_file="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix.txt"
+            density_vs_lmktype_stats_file_path="$stats_dir/$density_vs_lmktype_stats_file"
+            if [ -f "$density_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lmktype_stats_file_path" "$stats_dir/${density_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lmktype_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_lmktype_stats_file_path=$density_vs_lmktype_stats_file_path"
+
+            # Density vs lambda types experiment stats file setup
+            density_vs_lambda_stats_file="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix.txt"
+            density_vs_lambda_stats_file_path="$stats_dir/$density_vs_lambda_stats_file"
+            if [ -f "$density_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lambda_stats_file_path" "$stats_dir/${density_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_lambda_stats_file_path=$density_vs_lambda_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_fanout_stats_file="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix.txt"
+            density_vs_fanout_stats_file_path="$stats_dir/$density_vs_fanout_stats_file"
+            if [ -f "$density_vs_fanout_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_fanout_stats_file_path" "$stats_dir/${density_vs_fanout_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_fanout_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_fanout_stats_file_path=$density_vs_fanout_stats_file_path"
+
+            if (( i > 0 )); then
+                echo # Blank line before every network but the first
+            fi
+            echo "Building parameter testing object indexes for ${test_road_networks[$i]}..."
+
+            # With -f the stats files were kept above, and only the figures are drawn from them
+
+            if [ "$figures_only" == false ]; then
+                args="-c lmk_exp -e par_obj_idxs -g $idx_dir/${test_road_networks[$i]}.bin -p ${parameters[$i]} -f $output_path -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -y $landmark_types -z ${colt_lambdas[$i]} -n $num_sets -d $densities -t $knn_def_type -v $knn_def_var"
+                # echo "${exe_path}/$main_program $args"
+                ${exe_path}/$main_program $args
+            fi
+
+            # Generate figures (based on new or existing stats files)
+
+            if [ "$figures_only" == false ]; then
+                ### Extract columns for figure generation (this will be done any time files are created)
+
+                # Fanout vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$fanout_vs_lambda_stats_file"
+                cat $fanout_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:digit:]]+)" > $temp_file_path # Column 12 - Fanout
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $fanout_vs_lambda_stats_file_path # Column 13 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k12,12 -s -n  $fanout_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by fanout
+                cat $temp_file_path | bash splitStatsRows 13 > $fanout_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                # cat $temp_file_path > $fanout_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Num landmarks vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lambda_stats_file"
+                cat $numlmks_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 12 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $numlmks_vs_lambda_stats_file_path # Column 13 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k12,12 -s -n  $numlmks_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 13 > $numlmks_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Num landmarks vs landmark type experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lmktype_stats_file"
+                cat $numlmks_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 12 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $numlmks_vs_lmktype_stats_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k12,12n -s $numlmks_vs_lmktype_stats_file_path > $temp_file_path # Sort by landmark type, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 13 > $numlmks_vs_lmktype_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Density vs num landmarks experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_numlmks_stats_file"
+                cat $density_vs_numlmks_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 12 - Num Landmarks
+                # Sort file so same num landmarks are grouped together and add empty lines separating them
+                sort -t $'\t' -k12,12 -k9,9 -s -n $temp_file_path > $density_vs_numlmks_stats_file_path # Sort by num landmarks, then by density
+                cat $density_vs_numlmks_stats_file_path | bash splitStatsRows 12 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_numlmks_stats_file_path
+                rm $temp_file_path
+
+                # Density vs landmark types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lmktype_stats_file"
+                cat $density_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $temp_file_path # Column 12 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k12,12 -k9,9n -s $temp_file_path > $density_vs_lmktype_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lmktype_stats_file_path | bash splitStatsRows 12 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lmktype_stats_file_path
+                rm $temp_file_path
+
+                # Density vs lambda types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lambda_stats_file"
+                cat $density_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "lambda=([[:alnum:]]+)" > $temp_file_path # Column 12 - Lambda
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k12,12 -k9,9 -s -n $temp_file_path > $density_vs_lambda_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lambda_stats_file_path | bash splitStatsRows 12 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Density vs fanout types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_fanout_stats_file"
+                cat $density_vs_fanout_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:alnum:]]+)" > $temp_file_path # Column 12 - Fanout
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k12,12 -k9,9 -s -n $temp_file_path > $density_vs_fanout_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_fanout_stats_file_path | bash splitStatsRows 12 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_fanout_stats_file_path
+                rm $temp_file_path
+            fi
+
+            fanout_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix"
+            bash generateFigure "$fig_dir/${fanout_vs_lambda_figure_file_prefix}_time" $fanout_vs_lambda_stats_file_path "12,Fanout,${fanouts_xtics[$i]},'','',''" "6,Index Time (ms),'',''" "${colt_lambdas_plotlines[$i]}" "left bottom,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${fanout_vs_lambda_figure_file_prefix}_size" $fanout_vs_lambda_stats_file_path "12,Fanout,${fanouts_xtics[$i]},'','',''" "7,Index Size (KB),logscale,'10^{%T}'" "${colt_lambdas_plotlines[$i]}" "left bottom,horizontal maxcols 1,0"
+
+            numlmks_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix"
+            bash generateFigure "$fig_dir/${numlmks_vs_lambda_figure_file_prefix}_time" $numlmks_vs_lambda_stats_file_path "12,# of Landmarks,${numlmks_xtics[$i]},'','',''" "6,Index Time (ms),'',''" "${colt_lambdas_plotlines[$i]}" "left bottom,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${numlmks_vs_lambda_figure_file_prefix}_size" $numlmks_vs_lambda_stats_file_path "12,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Index Size (KB),logscale,'10^{%T}'" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix"
+            bash generateFigure "$fig_dir/${numlmks_vs_lmktype_figure_file_prefix}_time" $numlmks_vs_lmktype_stats_file_path "12,# of Landmarks,${numlmks_xtics[$i]},'','',''" "6,Index Time (ms),'',''" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${numlmks_vs_lmktype_figure_file_prefix}_size" $numlmks_vs_lmktype_stats_file_path "12,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Index Size (KB),logscale,'10^{%T}'" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_numlmks_figure_file_prefix="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix"
+            bash generateFigure "$fig_dir/${density_vs_numlmks_figure_file_prefix}_time" $density_vs_numlmks_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "6,Index Time (ms),logscale,'10^{%T}'" "${numlmks_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${density_vs_numlmks_figure_file_prefix}_size" $density_vs_numlmks_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "7,Index Size (KB),logscale,'10^{%T}'" "${numlmks_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix"
+            bash generateFigure "$fig_dir/${density_vs_lmktype_figure_file_prefix}_time" $density_vs_lmktype_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "6,Index Time (ms),logscale,'10^{%T}'" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${density_vs_lmktype_figure_file_prefix}_size" $density_vs_lmktype_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "7,Index Size (KB),logscale,'10^{%T}'" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix"
+            bash generateFigure "$fig_dir/${density_vs_lambda_figure_file_prefix}_time" $density_vs_lambda_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "6,Index Time (ms),logscale,'10^{%T}'" "$colt_lambdas_plotlines" "left top,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${density_vs_lambda_figure_file_prefix}_size" $density_vs_lambda_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "7,Index Size (KB),logscale,'10^{%T}'" "$colt_lambdas_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_fanout_figure_file_prefix="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix"
+            bash generateFigure "$fig_dir/${density_vs_fanout_figure_file_prefix}_time" $density_vs_fanout_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "6,Index Time (ms),logscale,'10^{%T}'" "$fanouts_plotlines" "left top,horizontal maxcols 1,0"
+            bash generateFigure "$fig_dir/${density_vs_fanout_figure_file_prefix}_size" $density_vs_fanout_stats_file_path "9,Density,$densities_xtics,'',logscale,''" "7,Index Size (KB),logscale,'10^{%T}'" "$fanouts_plotlines" "left top,horizontal maxcols 1,0"
+
+        done
+
+    fi
+    ####### kNN Queries
+    if [[ $mode == "knn" ]]; then
+        echo "Testing parameters for kNN queries..."
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+
+            ### Backup and clear stats files
+            fanout_vs_lambda_stats_file_suffix="parameter_fanout_vs_lambda_knn_query"
+            numlmks_vs_lambda_stats_file_suffix="parameter_numlmks_vs_lambda_knn_query"
+            numlmks_vs_lmktype_stats_file_suffix="parameter_numlmks_vs_lmktype_knn_query"
+            density_vs_numlmks_stats_file_suffix="parameter_density_vs_numlmks_knn_query"
+            density_vs_lmktype_stats_file_suffix="parameter_density_vs_lmktype_knn_query"
+            density_vs_lambda_stats_file_suffix="parameter_density_vs_lambda_knn_query"
+            density_vs_fanout_stats_file_suffix="parameter_density_vs_fanout_knn_query"
+
+            # Fanout vs lambda experiment stats file setup
+            fanout_vs_lambda_stats_file="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix.txt"
+            fanout_vs_lambda_stats_file_path="$stats_dir/$fanout_vs_lambda_stats_file"
+            if [ -f "$fanout_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$fanout_vs_lambda_stats_file_path" "$stats_dir/${fanout_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$fanout_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},fanout_vs_lambda_stats_file_path=$fanout_vs_lambda_stats_file_path"
+
+            # Num landmarks vs lambda experiment stats file setup
+            numlmks_vs_lambda_stats_file="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix.txt"
+            numlmks_vs_lambda_stats_file_path="$stats_dir/$numlmks_vs_lambda_stats_file"
+            if [ -f "$numlmks_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lambda_stats_file_path" "$stats_dir/${numlmks_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},numlmks_vs_lambda_stats_file_path=$numlmks_vs_lambda_stats_file_path"
+
+            # Num landmarks vs landmark type experiment stats file setup
+            numlmks_vs_lmktype_stats_file="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix.txt"
+            numlmks_vs_lmktype_stats_file_path="$stats_dir/$numlmks_vs_lmktype_stats_file"
+            if [ -f "$numlmks_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lmktype_stats_file_path" "$stats_dir/${numlmks_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lmktype_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},numlmks_vs_lmktype_stats_file_path=$numlmks_vs_lmktype_stats_file_path"
+
+            # Density vs num landmarks experiment stats file setup
+            density_vs_numlmks_stats_file="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix.txt"
+            density_vs_numlmks_stats_file_path="$stats_dir/$density_vs_numlmks_stats_file"
+            if [ -f "$density_vs_numlmks_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_numlmks_stats_file_path" "$stats_dir/${density_vs_numlmks_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_numlmks_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_numlmks_stats_file_path=$density_vs_numlmks_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_lmktype_stats_file="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix.txt"
+            density_vs_lmktype_stats_file_path="$stats_dir/$density_vs_lmktype_stats_file"
+            if [ -f "$density_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lmktype_stats_file_path" "$stats_dir/${density_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lmktype_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_lmktype_stats_file_path=$density_vs_lmktype_stats_file_path"
+
+            # Density vs lambda experiment stats file setup
+            density_vs_lambda_stats_file="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix.txt"
+            density_vs_lambda_stats_file_path="$stats_dir/$density_vs_lambda_stats_file"
+            if [ -f "$density_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lambda_stats_file_path" "$stats_dir/${density_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lambda_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_lambda_stats_file_path=$density_vs_lambda_stats_file_path"
+
+            # Density vs fanout experiment stats file setup
+            density_vs_fanout_stats_file="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix.txt"
+            density_vs_fanout_stats_file_path="$stats_dir/$density_vs_fanout_stats_file"
+            if [ -f "$density_vs_fanout_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_fanout_stats_file_path" "$stats_dir/${density_vs_fanout_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_fanout_stats_file_path"
+                fi
+            fi
+            parameters[$i]="${parameters[$i]},density_vs_fanout_stats_file_path=$density_vs_fanout_stats_file_path"
+
+
+            if [ "$figures_only" == false ]; then
+                if (( i > 0 )); then
+                    echo # Blank line before every network but the first
+                fi
+                echo "Running kNN query experiments for ${test_road_networks[$i]}..."
+
+                args="-c lmk_exp -e par_query_exp -g $idx_dir/${test_road_networks[$i]}.bin -p ${parameters[$i]} -f $output_path -q $sets_dir/${test_road_networks[$i]}_qv_$knn_pts_filename.txt -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -y $landmark_types -z ${colt_lambdas[$i]} -n $knn_num_sets -d $knn_densities -t $knn_def_type -v $knn_def_var"
+                # echo "$pin_cmd ${exe_path}/$main_program $args"
+                $pin_cmd ${exe_path}/$main_program $args
+            fi
+
+            # Generate figures (based on new or existing stats files)
+
+            if [ "$figures_only" == false ]; then
+                ### Extract columns for figure generation (this will be done any time files are created)
+
+                # Fanout vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$fanout_vs_lambda_stats_file"
+                cat $fanout_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:digit:]]+)" > $temp_file_path # Column 13 - Fanout
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $fanout_vs_lambda_stats_file_path # Column 14 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13 -s -n  $fanout_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by fanout
+                cat $temp_file_path | bash splitStatsRows 14 > $fanout_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                # cat $temp_file_path > $fanout_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Num landmarks vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lambda_stats_file"
+                cat $numlmks_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $numlmks_vs_lambda_stats_file_path # Column 14 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13 -s -n  $numlmks_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 14 > $numlmks_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Num landmarks vs landmark type experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lmktype_stats_file"
+                cat $numlmks_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $numlmks_vs_lmktype_stats_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13n -s $numlmks_vs_lmktype_stats_file_path > $temp_file_path # Sort by landmark type, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 14 > $numlmks_vs_lmktype_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Density vs num landmarks experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_numlmks_stats_file"
+                cat $density_vs_numlmks_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                # Sort file so same num landmarks are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_numlmks_stats_file_path # Sort by num landmarks, then by density
+                cat $density_vs_numlmks_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_numlmks_stats_file_path
+                rm $temp_file_path
+
+                # Density vs landmark types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lmktype_stats_file"
+                cat $density_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9n -s $temp_file_path > $density_vs_lmktype_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lmktype_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lmktype_stats_file_path
+                rm $temp_file_path
+
+                # Density vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lambda_stats_file"
+                cat $density_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "lambda=([[:alnum:]]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_lambda_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lambda_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Density vs fanout experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_fanout_stats_file"
+                cat $density_vs_fanout_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:alnum:]]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_fanout_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_fanout_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_fanout_stats_file_path
+                rm $temp_file_path
+            fi
+
+            fanout_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$fanout_vs_lambda_figure_file_prefix $fanout_vs_lambda_stats_file_path "13,Fanout,${fanouts_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lambda_figure_file_prefix $numlmks_vs_lambda_stats_file_path "13,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lmktype_figure_file_prefix $numlmks_vs_lmktype_stats_file_path "13,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_numlmks_figure_file_prefix="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_numlmks_figure_file_prefix $density_vs_numlmks_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),'',''" "${numlmks_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lmktype_figure_file_prefix $density_vs_lmktype_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),'',''" "$landmark_types_plotlines" "right bottom,horizontal maxcols 1,0"
+
+            density_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lambda_figure_file_prefix $density_vs_lambda_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_fanout_figure_file_prefix="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_fanout_figure_file_prefix $density_vs_fanout_stats_file_path "9,Density,$knn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),'',''" "$fanouts_plotlines" "left top,horizontal maxcols 1,0"
+        done
+    fi
+    ####### AkNN Queries
+    if [[ $mode == "aknn" ]]; then
+        echo "Testing parameters for AkNN queries..."
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+
+            ### Backup and clear stats files
+            fanout_vs_lambda_stats_file_suffix="parameter_fanout_vs_lambda_aknn_query"
+            numlmks_vs_lambda_stats_file_suffix="parameter_numlmks_vs_lambda_aknn_query"
+            numlmks_vs_lmktype_stats_file_suffix="parameter_numlmks_vs_lmktype_aknn_query"
+            density_vs_numlmks_stats_file_suffix="parameter_density_vs_numlmks_aknn_query"
+            density_vs_lmktype_stats_file_suffix="parameter_density_vs_lmktype_aknn_query"
+            density_vs_lambda_stats_file_suffix="parameter_density_vs_lambda_aknn_query"
+            density_vs_fanout_stats_file_suffix="parameter_density_vs_fanout_aknn_query"
+
+            # Fanout vs lambda experiment stats file setup
+            fanout_vs_lambda_stats_file="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix.txt"
+            fanout_vs_lambda_stats_file_path="$stats_dir/$fanout_vs_lambda_stats_file"
+            if [ -f "$fanout_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$fanout_vs_lambda_stats_file_path" "$stats_dir/${fanout_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$fanout_vs_lambda_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},fanout_vs_lambda_stats_file_path=$fanout_vs_lambda_stats_file_path"
+
+            # Num landmarks vs lambda experiment stats file setup
+            numlmks_vs_lambda_stats_file="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix.txt"
+            numlmks_vs_lambda_stats_file_path="$stats_dir/$numlmks_vs_lambda_stats_file"
+            if [ -f "$numlmks_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lambda_stats_file_path" "$stats_dir/${numlmks_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lambda_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},numlmks_vs_lambda_stats_file_path=$numlmks_vs_lambda_stats_file_path"
+
+            # Num landmarks vs landmark type experiment stats file setup
+            numlmks_vs_lmktype_stats_file="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix.txt"
+            numlmks_vs_lmktype_stats_file_path="$stats_dir/$numlmks_vs_lmktype_stats_file"
+            if [ -f "$numlmks_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lmktype_stats_file_path" "$stats_dir/${numlmks_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lmktype_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},numlmks_vs_lmktype_stats_file_path=$numlmks_vs_lmktype_stats_file_path"
+
+            # Density vs num landmarks experiment stats file setup
+            density_vs_numlmks_stats_file="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix.txt"
+            density_vs_numlmks_stats_file_path="$stats_dir/$density_vs_numlmks_stats_file"
+            if [ -f "$density_vs_numlmks_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_numlmks_stats_file_path" "$stats_dir/${density_vs_numlmks_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_numlmks_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},density_vs_numlmks_stats_file_path=$density_vs_numlmks_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_lmktype_stats_file="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix.txt"
+            density_vs_lmktype_stats_file_path="$stats_dir/$density_vs_lmktype_stats_file"
+            if [ -f "$density_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lmktype_stats_file_path" "$stats_dir/${density_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lmktype_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},density_vs_lmktype_stats_file_path=$density_vs_lmktype_stats_file_path"
+
+            # Density vs lambda experiment stats file setup
+            density_vs_lambda_stats_file="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix.txt"
+            density_vs_lambda_stats_file_path="$stats_dir/$density_vs_lambda_stats_file"
+            if [ -f "$density_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lambda_stats_file_path" "$stats_dir/${density_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lambda_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},density_vs_lambda_stats_file_path=$density_vs_lambda_stats_file_path"
+
+            # Density vs fanout experiment stats file setup
+            density_vs_fanout_stats_file="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix.txt"
+            density_vs_fanout_stats_file_path="$stats_dir/$density_vs_fanout_stats_file"
+            if [ -f "$density_vs_fanout_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_fanout_stats_file_path" "$stats_dir/${density_vs_fanout_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_fanout_stats_file_path"
+                fi
+            fi
+            aknn_parameters[$i]="${aknn_parameters[$i]},density_vs_fanout_stats_file_path=$density_vs_fanout_stats_file_path"
+
+
+            if [ "$figures_only" == false ]; then
+                if (( i > 0 )); then
+                    echo # Blank line before every network but the first
+                fi
+                echo "Running AkNN query experiments for ${test_road_networks[$i]}..."
+
+                args="-c lmk_agg_exp -e par_query_exp -g $idx_dir/${test_road_networks[$i]}.bin -p ${aknn_parameters[$i]} -f $output_path -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -h $landmark_types -i ${colt_lambdas[$i]} -j $par_aknn_def_agg_func -n $aknn_num_sets -d $aknn_densities -t $aknn_def_type -v $aknn_def_var"
+                # echo "$pin_cmd ${exe_path}/$main_program $args"
+                $pin_cmd ${exe_path}/$main_program $args
+            fi
+
+            # Generate figures (based on new or existing stats files)
+
+            if [ "$figures_only" == false ]; then
+                ### Extract columns for figure generation (this will be done any time files are created)
+
+                # Fanout vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$fanout_vs_lambda_stats_file"
+                cat $fanout_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:digit:]]+)" > $temp_file_path # Column 14 - Fanout
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $fanout_vs_lambda_stats_file_path # Column 15 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14 -s -n  $fanout_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by fanout
+                cat $temp_file_path | bash splitStatsRows 15 > $fanout_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                # cat $temp_file_path > $fanout_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Num landmarks vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lambda_stats_file"
+                cat $numlmks_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $numlmks_vs_lambda_stats_file_path # Column 15 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14 -s -n  $numlmks_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 15 > $numlmks_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Num landmarks vs landmark type experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lmktype_stats_file"
+                cat $numlmks_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $numlmks_vs_lmktype_stats_file_path # Column 15 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14n -s $numlmks_vs_lmktype_stats_file_path > $temp_file_path # Sort by landmark type, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 15 > $numlmks_vs_lmktype_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Density vs num landmarks experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_numlmks_stats_file"
+                cat $density_vs_numlmks_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                # Sort file so same num landmarks are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_numlmks_stats_file_path # Sort by num landmarks, then by density
+                cat $density_vs_numlmks_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_numlmks_stats_file_path
+                rm $temp_file_path
+
+                # Density vs landmark types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lmktype_stats_file"
+                cat $density_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9n -s $temp_file_path > $density_vs_lmktype_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lmktype_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lmktype_stats_file_path
+                rm $temp_file_path
+
+                # Density vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lambda_stats_file"
+                cat $density_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "lambda=([[:alnum:]]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_lambda_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lambda_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Density vs fanout experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_fanout_stats_file"
+                cat $density_vs_fanout_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:alnum:]]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_fanout_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_fanout_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_fanout_stats_file_path
+                rm $temp_file_path
+            fi
+
+            fanout_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$fanout_vs_lambda_figure_file_prefix $fanout_vs_lambda_stats_file_path "14,Fanout,${fanouts_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lambda_figure_file_prefix $numlmks_vs_lambda_stats_file_path "14,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lmktype_figure_file_prefix $numlmks_vs_lmktype_stats_file_path "14,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_numlmks_figure_file_prefix="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_numlmks_figure_file_prefix $density_vs_numlmks_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${numlmks_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lmktype_figure_file_prefix $density_vs_lmktype_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lambda_figure_file_prefix $density_vs_lambda_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_fanout_figure_file_prefix="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_fanout_figure_file_prefix $density_vs_fanout_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),'',''" "$fanouts_plotlines" "right bottom,horizontal maxcols 1,0"
+        done
+    fi
+    ####### FkN Queries
+    if [[ $mode == "fkn" ]]; then
+        echo "Testing parameters for FkN queries..."
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+
+            ### Backup and clear stats files
+            fanout_vs_lambda_stats_file_suffix="parameter_fanout_vs_lambda_fkn_query"
+            numlmks_vs_lambda_stats_file_suffix="parameter_numlmks_vs_lambda_fkn_query"
+            numlmks_vs_lmktype_stats_file_suffix="parameter_numlmks_vs_lmktype_fkn_query"
+            density_vs_numlmks_stats_file_suffix="parameter_density_vs_numlmks_fkn_query"
+            density_vs_lmktype_stats_file_suffix="parameter_density_vs_lmktype_fkn_query"
+            density_vs_lambda_stats_file_suffix="parameter_density_vs_lambda_fkn_query"
+            density_vs_fanout_stats_file_suffix="parameter_density_vs_fanout_fkn_query"
+
+            # Fanout vs lambda experiment stats file setup
+            fanout_vs_lambda_stats_file="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix.txt"
+            fanout_vs_lambda_stats_file_path="$stats_dir/$fanout_vs_lambda_stats_file"
+            if [ -f "$fanout_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$fanout_vs_lambda_stats_file_path" "$stats_dir/${fanout_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$fanout_vs_lambda_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},fanout_vs_lambda_stats_file_path=$fanout_vs_lambda_stats_file_path"
+
+            # Num landmarks vs lambda experiment stats file setup
+            numlmks_vs_lambda_stats_file="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix.txt"
+            numlmks_vs_lambda_stats_file_path="$stats_dir/$numlmks_vs_lambda_stats_file"
+            if [ -f "$numlmks_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lambda_stats_file_path" "$stats_dir/${numlmks_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lambda_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},numlmks_vs_lambda_stats_file_path=$numlmks_vs_lambda_stats_file_path"
+
+            # Num landmarks vs landmark type experiment stats file setup
+            numlmks_vs_lmktype_stats_file="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix.txt"
+            numlmks_vs_lmktype_stats_file_path="$stats_dir/$numlmks_vs_lmktype_stats_file"
+            if [ -f "$numlmks_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lmktype_stats_file_path" "$stats_dir/${numlmks_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lmktype_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},numlmks_vs_lmktype_stats_file_path=$numlmks_vs_lmktype_stats_file_path"
+
+            # Density vs num landmarks experiment stats file setup
+            density_vs_numlmks_stats_file="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix.txt"
+            density_vs_numlmks_stats_file_path="$stats_dir/$density_vs_numlmks_stats_file"
+            if [ -f "$density_vs_numlmks_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_numlmks_stats_file_path" "$stats_dir/${density_vs_numlmks_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_numlmks_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},density_vs_numlmks_stats_file_path=$density_vs_numlmks_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_lmktype_stats_file="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix.txt"
+            density_vs_lmktype_stats_file_path="$stats_dir/$density_vs_lmktype_stats_file"
+            if [ -f "$density_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lmktype_stats_file_path" "$stats_dir/${density_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lmktype_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},density_vs_lmktype_stats_file_path=$density_vs_lmktype_stats_file_path"
+
+            # Density vs lambda experiment stats file setup
+            density_vs_lambda_stats_file="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix.txt"
+            density_vs_lambda_stats_file_path="$stats_dir/$density_vs_lambda_stats_file"
+            if [ -f "$density_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lambda_stats_file_path" "$stats_dir/${density_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lambda_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},density_vs_lambda_stats_file_path=$density_vs_lambda_stats_file_path"
+
+            # Density vs fanout experiment stats file setup
+            density_vs_fanout_stats_file="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix.txt"
+            density_vs_fanout_stats_file_path="$stats_dir/$density_vs_fanout_stats_file"
+            if [ -f "$density_vs_fanout_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_fanout_stats_file_path" "$stats_dir/${density_vs_fanout_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_fanout_stats_file_path"
+                fi
+            fi
+            fkn_parameters[$i]="${fkn_parameters[$i]},density_vs_fanout_stats_file_path=$density_vs_fanout_stats_file_path"
+
+
+            if [ "$figures_only" == false ]; then
+                if (( i > 0 )); then
+                    echo # Blank line before every network but the first
+                fi
+                echo "Running FkN query experiments for ${test_road_networks[$i]}..."
+
+                args="-c lmk_farthest_exp -e par_query_exp -g $idx_dir/${test_road_networks[$i]}.bin -p ${fkn_parameters[$i]} -f $output_path -q $sets_dir/${test_road_networks[$i]}_qv_$fkn_pts_filename.txt -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -y $landmark_types -z ${colt_lambdas[$i]} -n $fkn_num_sets -d $fkn_densities -t $fkn_def_type -v $fkn_def_var"
+                # echo "$pin_cmd ${exe_path}/$main_program $args"
+                $pin_cmd ${exe_path}/$main_program $args
+            fi
+
+            # Generate figures (based on new or existing stats files)
+
+            if [ "$figures_only" == false ]; then
+                ### Extract columns for figure generation (this will be done any time files are created)
+
+                # Fanout vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$fanout_vs_lambda_stats_file"
+                cat $fanout_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:digit:]]+)" > $temp_file_path # Column 13 - Fanout
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $fanout_vs_lambda_stats_file_path # Column 14 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13 -s -n  $fanout_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by fanout
+                cat $temp_file_path | bash splitStatsRows 14 > $fanout_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                # cat $temp_file_path > $fanout_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Num landmarks vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lambda_stats_file"
+                cat $numlmks_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $numlmks_vs_lambda_stats_file_path # Column 14 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13 -s -n  $numlmks_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 14 > $numlmks_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Num landmarks vs landmark type experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lmktype_stats_file"
+                cat $numlmks_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $numlmks_vs_lmktype_stats_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k13,13n -s $numlmks_vs_lmktype_stats_file_path > $temp_file_path # Sort by landmark type, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 14 > $numlmks_vs_lmktype_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Density vs num landmarks experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_numlmks_stats_file"
+                cat $density_vs_numlmks_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 13 - Num Landmarks
+                # Sort file so same num landmarks are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_numlmks_stats_file_path # Sort by num landmarks, then by density
+                cat $density_vs_numlmks_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_numlmks_stats_file_path
+                rm $temp_file_path
+
+                # Density vs landmark types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lmktype_stats_file"
+                cat $density_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9n -s $temp_file_path > $density_vs_lmktype_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lmktype_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lmktype_stats_file_path
+                rm $temp_file_path
+
+                # Density vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lambda_stats_file"
+                cat $density_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "lambda=([[:alnum:]]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_lambda_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lambda_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Density vs fanout experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_fanout_stats_file"
+                cat $density_vs_fanout_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:alnum:]]+)" > $temp_file_path # Column 13 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k13,13 -k9,9 -s -n $temp_file_path > $density_vs_fanout_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_fanout_stats_file_path | bash splitStatsRows 13 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_fanout_stats_file_path
+                rm $temp_file_path
+            fi
+
+            fanout_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$fanout_vs_lambda_figure_file_prefix $fanout_vs_lambda_stats_file_path "13,Fanout,${fanouts_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lambda_figure_file_prefix $numlmks_vs_lambda_stats_file_path "13,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lmktype_figure_file_prefix $numlmks_vs_lmktype_stats_file_path "13,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_numlmks_figure_file_prefix="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_numlmks_figure_file_prefix $density_vs_numlmks_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${numlmks_plotlines[$i]}" "right bottom,horizontal maxcols 1,0"
+
+            density_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lmktype_figure_file_prefix $density_vs_lmktype_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "$landmark_types_plotlines" "right bottom,horizontal maxcols 1,0"
+
+            density_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lambda_figure_file_prefix $density_vs_lambda_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${colt_lambdas_plotlines[$i]}" "right bottom,horizontal maxcols 1,0"
+
+            density_vs_fanout_figure_file_prefix="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_fanout_figure_file_prefix $density_vs_fanout_stats_file_path "9,Density,$fkn_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "$fanouts_plotlines" "left top,horizontal maxcols 1,0"
+        done
+    fi
+    ####### Range Queries
+    if [[ $mode == "range" ]]; then
+        echo "Testing parameters for range queries..."
+        echo "NOTE: Range queries use their own default density (range_def_density in the dataset config), so this mode assumes build_range_obj has been run before it"
+
+        for i in "${!test_road_networks[@]}"; do 
+            load_test_network $i # The tested network's dataset config
+
+            ### Backup and clear stats files
+            fanout_vs_lambda_stats_file_suffix="parameter_fanout_vs_lambda_range_query"
+            numlmks_vs_lambda_stats_file_suffix="parameter_numlmks_vs_lambda_range_query"
+            numlmks_vs_lmktype_stats_file_suffix="parameter_numlmks_vs_lmktype_range_query"
+            density_vs_numlmks_stats_file_suffix="parameter_density_vs_numlmks_range_query"
+            density_vs_lmktype_stats_file_suffix="parameter_density_vs_lmktype_range_query"
+            density_vs_lambda_stats_file_suffix="parameter_density_vs_lambda_range_query"
+            density_vs_fanout_stats_file_suffix="parameter_density_vs_fanout_range_query"
+
+            # Fanout vs lambda experiment stats file setup
+            fanout_vs_lambda_stats_file="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix.txt"
+            fanout_vs_lambda_stats_file_path="$stats_dir/$fanout_vs_lambda_stats_file"
+            if [ -f "$fanout_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$fanout_vs_lambda_stats_file_path" "$stats_dir/${fanout_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$fanout_vs_lambda_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},fanout_vs_lambda_stats_file_path=$fanout_vs_lambda_stats_file_path"
+
+            # Num landmarks vs lambda experiment stats file setup
+            numlmks_vs_lambda_stats_file="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix.txt"
+            numlmks_vs_lambda_stats_file_path="$stats_dir/$numlmks_vs_lambda_stats_file"
+            if [ -f "$numlmks_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lambda_stats_file_path" "$stats_dir/${numlmks_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lambda_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},numlmks_vs_lambda_stats_file_path=$numlmks_vs_lambda_stats_file_path"
+
+            # Num landmarks vs landmark type experiment stats file setup
+            numlmks_vs_lmktype_stats_file="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix.txt"
+            numlmks_vs_lmktype_stats_file_path="$stats_dir/$numlmks_vs_lmktype_stats_file"
+            if [ -f "$numlmks_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$numlmks_vs_lmktype_stats_file_path" "$stats_dir/${numlmks_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$numlmks_vs_lmktype_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},numlmks_vs_lmktype_stats_file_path=$numlmks_vs_lmktype_stats_file_path"
+
+            # Density vs num landmarks experiment stats file setup
+            density_vs_numlmks_stats_file="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix.txt"
+            density_vs_numlmks_stats_file_path="$stats_dir/$density_vs_numlmks_stats_file"
+            if [ -f "$density_vs_numlmks_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_numlmks_stats_file_path" "$stats_dir/${density_vs_numlmks_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_numlmks_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},density_vs_numlmks_stats_file_path=$density_vs_numlmks_stats_file_path"
+
+            # Density vs landmark types experiment stats file setup
+            density_vs_lmktype_stats_file="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix.txt"
+            density_vs_lmktype_stats_file_path="$stats_dir/$density_vs_lmktype_stats_file"
+            if [ -f "$density_vs_lmktype_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lmktype_stats_file_path" "$stats_dir/${density_vs_lmktype_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lmktype_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},density_vs_lmktype_stats_file_path=$density_vs_lmktype_stats_file_path"
+
+            # Density vs lambda experiment stats file setup
+            density_vs_lambda_stats_file="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix.txt"
+            density_vs_lambda_stats_file_path="$stats_dir/$density_vs_lambda_stats_file"
+            if [ -f "$density_vs_lambda_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_lambda_stats_file_path" "$stats_dir/${density_vs_lambda_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_lambda_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},density_vs_lambda_stats_file_path=$density_vs_lambda_stats_file_path"
+
+            # Density vs fanout experiment stats file setup
+            density_vs_fanout_stats_file="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix.txt"
+            density_vs_fanout_stats_file_path="$stats_dir/$density_vs_fanout_stats_file"
+            if [ -f "$density_vs_fanout_stats_file_path" ] && [ "$figures_only" == false ]; then
+                if [ "$overwrite" == false ]; then
+                    mv "$density_vs_fanout_stats_file_path" "$stats_dir/${density_vs_fanout_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+                else
+                    rm "$density_vs_fanout_stats_file_path"
+                fi
+            fi
+            range_parameters[$i]="${range_parameters[$i]},density_vs_fanout_stats_file_path=$density_vs_fanout_stats_file_path"
+
+
+            if [ "$figures_only" == false ]; then
+                if (( i > 0 )); then
+                    echo # Blank line before every network but the first
+                fi
+                echo "Running range query experiments for ${test_road_networks[$i]}..."
+
+                args="-c lmk_range_exp -e par_query_exp -g $idx_dir/${test_road_networks[$i]}.bin -p ${range_parameters[$i]} -f $output_path -q $sets_dir/${test_road_networks[$i]}_qv_$range_pts_filename.txt -u ${min_sltree_lambda[$i]} -w ${fanouts[$i]} -x ${numlmks[$i]} -y $landmark_types -z ${colt_lambdas[$i]} -n $range_num_sets -d $range_densities -t $range_def_type -v $range_def_var"
+                # echo "$pin_cmd ${exe_path}/$main_program $args"
+                $pin_cmd ${exe_path}/$main_program $args
+            fi
+
+            # Generate figures (based on new or existing stats files)
+
+            if [ "$figures_only" == false ]; then
+                ### Extract columns for figure generation (this will be done any time files are created)
+
+                # Fanout vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$fanout_vs_lambda_stats_file"
+                cat $fanout_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:digit:]]+)" > $temp_file_path # Column 14 - Fanout
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $fanout_vs_lambda_stats_file_path # Column 15 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14 -s -n  $fanout_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by fanout
+                cat $temp_file_path | bash splitStatsRows 15 > $fanout_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                # cat $temp_file_path > $fanout_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Num landmarks vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lambda_stats_file"
+                cat $numlmks_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lambda=([[:digit:]]+)" > $numlmks_vs_lambda_stats_file_path # Column 15 - Lambda
+                # Sort file so same lambda are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14 -s -n  $numlmks_vs_lambda_stats_file_path > $temp_file_path # Sort by lambda, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 15 > $numlmks_vs_lambda_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Num landmarks vs landmark type experiment stats file setup
+                temp_file_path="$stats_dir/temp_$numlmks_vs_lmktype_stats_file"
+                cat $numlmks_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                cat $temp_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $numlmks_vs_lmktype_stats_file_path # Column 15 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k15,15 -k14,14n -s $numlmks_vs_lmktype_stats_file_path > $temp_file_path # Sort by landmark type, then by num landmarks
+                cat $temp_file_path | bash splitStatsRows 15 > $numlmks_vs_lmktype_stats_file_path # Insert two newlines between methods (required by gnuplot)
+                rm $temp_file_path
+
+                # Density vs num landmarks experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_numlmks_stats_file"
+                cat $density_vs_numlmks_stats_file_path | bash extractColumnAndAppend 4 "numlmks=([[:digit:]]+)" > $temp_file_path # Column 14 - Num Landmarks
+                # Sort file so same num landmarks are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_numlmks_stats_file_path # Sort by num landmarks, then by density
+                cat $density_vs_numlmks_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_numlmks_stats_file_path
+                rm $temp_file_path
+
+                # Density vs landmark types experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lmktype_stats_file"
+                cat $density_vs_lmktype_stats_file_path | bash extractColumnAndAppend 4 "lmktype=([[:alnum:]_]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9n -s $temp_file_path > $density_vs_lmktype_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lmktype_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lmktype_stats_file_path
+                rm $temp_file_path
+
+                # Density vs lambda experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_lambda_stats_file"
+                cat $density_vs_lambda_stats_file_path | bash extractColumnAndAppend 4 "lambda=([[:alnum:]]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_lambda_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_lambda_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_lambda_stats_file_path
+                rm $temp_file_path
+
+                # Density vs fanout experiment stats file setup
+                temp_file_path="$stats_dir/temp_$density_vs_fanout_stats_file"
+                cat $density_vs_fanout_stats_file_path | bash extractColumnAndAppend 4 "fanout=([[:alnum:]]+)" > $temp_file_path # Column 14 - Landmark Types
+                # Sort file so same landmark types are grouped together and add empty lines separating them
+                sort -t $'\t' -k14,14 -k9,9 -s -n $temp_file_path > $density_vs_fanout_stats_file_path # Sort by landmark type, then by density
+                cat $density_vs_fanout_stats_file_path | bash splitStatsRows 14 > $temp_file_path # Insert two newlines between methods (required by gnuplot)
+                cat $temp_file_path > $density_vs_fanout_stats_file_path
+                rm $temp_file_path
+            fi
+
+            fanout_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$fanout_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$fanout_vs_lambda_figure_file_prefix $fanout_vs_lambda_stats_file_path "14,Fanout,${fanouts_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lambda_figure_file_prefix $numlmks_vs_lambda_stats_file_path "14,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            numlmks_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$numlmks_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$numlmks_vs_lmktype_figure_file_prefix $numlmks_vs_lmktype_stats_file_path "14,# of Landmarks,${numlmks_xtics[$i]},'','',''" "7,Query Time ({/Symbol m}s),'',''" "$landmark_types_plotlines" "left top,horizontal maxcols 1,0"
+
+            density_vs_numlmks_figure_file_prefix="${test_road_networks[$i]}_$density_vs_numlmks_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_numlmks_figure_file_prefix $density_vs_numlmks_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${numlmks_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_lmktype_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lmktype_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lmktype_figure_file_prefix $density_vs_lmktype_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "$landmark_types_plotlines" "right bottom,horizontal maxcols 1,0"
+
+            density_vs_lambda_figure_file_prefix="${test_road_networks[$i]}_$density_vs_lambda_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_lambda_figure_file_prefix $density_vs_lambda_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "${colt_lambdas_plotlines[$i]}" "left top,horizontal maxcols 1,0"
+
+            density_vs_fanout_figure_file_prefix="${test_road_networks[$i]}_$density_vs_fanout_stats_file_suffix"
+            bash generateFigure $fig_dir/$density_vs_fanout_figure_file_prefix $density_vs_fanout_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^{%T}'" "$fanouts_plotlines" "left top,horizontal maxcols 1,0"
+        done
+    fi
+else
+    echo "Invalid or no specifier! Must be one of: $modes"
+    exit 1
+fi

@@ -1,0 +1,75 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash generateQuerySets [-d datasets] [-c dataset]
+Generates the query sets of the experiments each dataset's config lists, and the real-world ones of the experiments whose
+real-world list is switched on. They are drawn from set_seed in globalVariables, so the same seed generates the same sets.
+  -d, --dataset    comma-separated datasets (default_network in globalVariables if omitted)
+  -c, --copy-from  copy the query sets of this dataset instead of generating them. It must have the same vertex IDs and neighbours
+                   (e.g. the same network with other edge weights) and query sets of the same names; the binary checks both"
+. scriptArguments dc 0 "$@"
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the query sets
+
+networks=("$default_network")
+if [[ $dataset != "" ]]; then
+    IFS=',' read -ra networks <<< "$dataset"
+fi
+
+for i in "${!networks[@]}"; do
+    if (( i > 0 )); then
+        echo # Blank line before every network but the first
+    fi
+    dataset=${networks[$i]}
+    ( # A subshell per dataset, so that no setting of its dataset config carries over to the next dataset
+        . globalVariables "" --quiet_globalVariables "$dataset"
+        copy_args=""
+        if [[ $copy_from != "" ]]; then
+            echo "Copying the query sets of $copy_from to $dataset..."
+            copy_args="-a $idx_dir/$copy_from.bin"
+        else
+            echo "Generating query points file for $dataset..."
+        fi
+        if [[ ",$experiments," == *",knn,"* ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$knn_pts_filename.txt -n $knn_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",aknn,"* ]]; then
+            args="-c vertex_vec -t subnet -r $set_seed -b $idx_dir/$dataset.bin -n $aknn_num_qv_sets -v $aknn_qv_max_setsize -s $aknn_qv_setsubnetsizes -p $output_path"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",fkn,"* ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$fkn_pts_filename.txt -n $fkn_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",range,"* ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$range_pts_filename.txt -n $range_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        # Real-world object set experiments have only one object set per POI type, so generate
+        # (number of object sets x number of query vertices) query vertices to match the number of synthetic queries
+        if [[ ",$experiments," == *",knn,"* && $knn_rw == "1" ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$knn_rw_pts_filename.txt -n $knn_rw_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",aknn,"* && $aknn_rw == "1" ]]; then
+            args="-c vertex_vec -t subnet -r $set_seed -b $idx_dir/$dataset.bin -n $aknn_rw_num_qv_sets -v $aknn_qv_max_setsize -s $aknn_qv_def_setsubnetsize -p $output_path"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",fkn,"* && $fkn_rw == "1" ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$fkn_rw_pts_filename.txt -n $fkn_rw_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+
+        if [[ ",$experiments," == *",range,"* && $range_rw == "1" ]]; then
+            args="-c sample_set -t random -r $set_seed -i $idx_dir/$dataset.bin -o $sets_dir/${dataset}_qv_$range_rw_pts_filename.txt -n $range_rw_num_qv"
+            ${exe_path}/$main_program $args $copy_args
+        fi
+    )
+done

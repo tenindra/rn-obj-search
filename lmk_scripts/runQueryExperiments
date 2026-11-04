@@ -1,0 +1,39 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runQueryExperiments <mode> -e experiment [-d dataset] [-o] [-f]
+Runs the query experiments of the experiment on the dataset and draws their figures, with the experiment's run script for the mode
+(e.g. runFarthestQueryExperiments for time -e fkn, runFarthestStatsExperiments for stats -e fkn).
+  mode                time (query times) or stats (query statistics, rn_obj_search_stats)
+  -e, --experiment    knn, aknn, fkn or range
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments edof 1 "$@"
+mode=${positional[0]:-}
+case $mode in
+    time) mode_script="Query" ;;
+    stats) mode_script="Stats" ;;
+    "") echo -e "No mode given\n\n$usage" >&2; exit 1 ;;
+    *) echo -e "Unknown mode $mode\n\n$usage" >&2; exit 1 ;;
+esac
+case $experiment in
+    knn) experiment_script="KNN" ;;
+    aknn) experiment_script="Agg" ;;
+    fkn) experiment_script="Farthest" ;;
+    range) experiment_script="Range" ;;
+    *) echo -e "Unknown experiment $experiment\n\n$usage" >&2; exit 1 ;;
+esac
+
+script_args=()
+if [[ $dataset != "" ]]; then
+    script_args+=(-d "$dataset")
+fi
+if [[ $overwrite == true ]]; then
+    script_args+=(-o)
+fi
+if [[ $figures_only == true ]]; then
+    script_args+=(-f)
+fi
+exec bash "run${experiment_script}${mode_script}Experiments" "${script_args[@]}"

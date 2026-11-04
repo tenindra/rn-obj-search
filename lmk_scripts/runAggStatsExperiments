@@ -1,0 +1,284 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runAggStatsExperiments [-d dataset] [-o] [-f]
+Runs the AkNN query statistics experiments (rn_obj_search_stats) on the dataset and draws their figures.
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments dof 0 "$@"
+. globalVariables aknn "" "$dataset"
+
+# Experiment Setup
+
+# Varying K
+max_varyingk_stats_file="stats_${default_network}_$aknn_max_varyingk_stats_file_suffix.txt"
+max_varyingk_stats_file_path="$stats_dir/$max_varyingk_stats_file"
+if [ "$aknn_varyingk" == "1" ] && [ -f "$max_varyingk_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$max_varyingk_stats_file_path" "$stats_dir/${max_varyingk_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$max_varyingk_stats_file_path"
+    fi
+fi
+sum_varyingk_stats_file="stats_${default_network}_$aknn_sum_varyingk_stats_file_suffix.txt"
+sum_varyingk_stats_file_path="$stats_dir/$sum_varyingk_stats_file"
+if [ "$aknn_varyingk" == "1" ] && [ -f "$sum_varyingk_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$sum_varyingk_stats_file_path" "$stats_dir/${sum_varyingk_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$sum_varyingk_stats_file_path"
+    fi
+fi
+
+# Varying Density
+max_varyingdensity_stats_file="stats_${default_network}_$aknn_max_varyingdensity_stats_file_suffix.txt"
+max_varyingdensity_stats_file_path="$stats_dir/$max_varyingdensity_stats_file"
+if [ "$aknn_varyingdensity" == "1" ] && [ -f "$max_varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$max_varyingdensity_stats_file_path" "$stats_dir/${max_varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$max_varyingdensity_stats_file_path"
+    fi
+fi
+sum_varyingdensity_stats_file="stats_${default_network}_$aknn_sum_varyingdensity_stats_file_suffix.txt"
+sum_varyingdensity_stats_file_path="$stats_dir/$sum_varyingdensity_stats_file"
+if [ "$aknn_varyingdensity" == "1" ] && [ -f "$sum_varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$sum_varyingdensity_stats_file_path" "$stats_dir/${sum_varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$sum_varyingdensity_stats_file_path"
+    fi
+fi
+
+# Varying RW Object Set (place-holder only)
+max_varyingrwset_stats_file="stats_${default_network}_$aknn_max_varyingrwset_stats_file_suffix.txt"
+sum_varyingrwset_stats_file="stats_${default_network}_$aknn_sum_varyingrwset_stats_file_suffix.txt"
+
+# Varying Query Vertex Set Size
+max_varyingqvsetsize_stats_file="stats_${default_network}_$aknn_max_varyingqvsetsize_stats_file_suffix.txt"
+max_varyingqvsetsize_stats_file_path="$stats_dir/$max_varyingqvsetsize_stats_file"
+if [ "$aknn_varyingqvsetsize" == "1" ] && [ -f "$max_varyingqvsetsize_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$max_varyingqvsetsize_stats_file_path" "$stats_dir/${max_varyingqvsetsize_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$max_varyingqvsetsize_stats_file_path"
+    fi
+fi
+sum_varyingqvsetsize_stats_file="stats_${default_network}_$aknn_sum_varyingqvsetsize_stats_file_suffix.txt"
+sum_varyingqvsetsize_stats_file_path="$stats_dir/$sum_varyingqvsetsize_stats_file"
+if [ "$aknn_varyingqvsetsize" == "1" ] && [ -f "$sum_varyingqvsetsize_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$sum_varyingqvsetsize_stats_file_path" "$stats_dir/${sum_varyingqvsetsize_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$sum_varyingqvsetsize_stats_file_path"
+    fi
+fi
+
+# Varying Query Vertex Set Subnet Size
+max_varyingqvsetsubnetsize_stats_file="stats_${default_network}_$aknn_max_varyingqvsetsubnetsize_stats_file_suffix.txt"
+max_varyingqvsetsubnetsize_stats_file_path="$stats_dir/$max_varyingqvsetsubnetsize_stats_file"
+if [ "$aknn_varyingqvsetsubnetsize" == "1" ] && [ -f "$max_varyingqvsetsubnetsize_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$max_varyingqvsetsubnetsize_stats_file_path" "$stats_dir/${max_varyingqvsetsubnetsize_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$max_varyingqvsetsubnetsize_stats_file_path"
+    fi
+fi
+sum_varyingqvsetsubnetsize_stats_file="stats_${default_network}_$aknn_sum_varyingqvsetsubnetsize_stats_file_suffix.txt"
+sum_varyingqvsetsubnetsize_stats_file_path="$stats_dir/$sum_varyingqvsetsubnetsize_stats_file"
+if [ "$aknn_varyingqvsetsubnetsize" == "1" ] && [ -f "$sum_varyingqvsetsubnetsize_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$sum_varyingqvsetsubnetsize_stats_file_path" "$stats_dir/${sum_varyingqvsetsubnetsize_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$sum_varyingqvsetsubnetsize_stats_file_path"
+    fi
+fi
+
+aknn_rw="0" # Don't run real-world experiments for stats collection
+aknn_query_parameters="$aknn_methods,aknn_def_k=$aknn_def_k,aknn_def_density=$aknn_def_density,aknn_def_type=$aknn_def_type,aknn_def_var=$aknn_def_var,\
+aknn_rw=$aknn_rw,aknn_qv_def_setsize=$aknn_qv_def_setsize,aknn_qv_max_setsize=$aknn_qv_max_setsize,aknn_num_qv_sets=$aknn_num_qv_sets,\
+aknn_qv_def_setsubnetsize=$aknn_qv_def_setsubnetsize,aknn_varyingk=$aknn_varyingk,aknn_varyingdensity=$aknn_varyingdensity,aknn_varyingqvsetsize=$aknn_varyingqvsetsize,aknn_varyingqvsetsubnetsize=$aknn_varyingqvsetsubnetsize"
+
+index_parameters="aknn_index_parameters"
+obj_index_parameters="aknn_obj_index_parameters" # Part of the object index file names
+query_parameters="$dataset_index_parameters,${!index_parameters},${!obj_index_parameters},$aknn_query_parameters,\
+max_aknn_varyingk_stats_file=$max_varyingk_stats_file,sum_aknn_varyingk_stats_file=$sum_varyingk_stats_file,\
+max_aknn_varyingdensity_stats_file=$max_varyingdensity_stats_file,sum_aknn_varyingdensity_stats_file=$sum_varyingdensity_stats_file,\
+max_aknn_varyingrwset_stats_file=$max_varyingrwset_stats_file,sum_aknn_varyingrwset_stats_file=$sum_varyingrwset_stats_file,\
+max_aknn_varyingqvsetsize_stats_file=$max_varyingqvsetsize_stats_file,sum_aknn_varyingqvsetsize_stats_file=$sum_varyingqvsetsize_stats_file,\
+max_aknn_varyingqvsetsubnetsize_stats_file=$max_varyingqvsetsubnetsize_stats_file,sum_aknn_varyingqvsetsubnetsize_stats_file=$sum_varyingqvsetsubnetsize_stats_file"
+
+
+# Note: No '=' signs allowed in stats file names
+
+# Need to create a new file for LBs computed results because we have to remove IER results
+# as we are comparing LLBs for OL vs NVD approaches
+lbs_max_varyingk_stats_file_path="$stats_dir/lbs_$max_varyingk_stats_file"
+lbs_max_varyingdensity_stats_file_path="$stats_dir/lbs_$max_varyingdensity_stats_file"
+lbs_max_varyingqvsetsize_stats_file_path="$stats_dir/lbs_$max_varyingqvsetsize_stats_file"
+lbs_max_varyingqvsetsubnetsize_stats_file_path="$stats_dir/lbs_$max_varyingqvsetsubnetsize_stats_file"
+lbs_sum_varyingk_stats_file_path="$stats_dir/lbs_$sum_varyingk_stats_file"
+lbs_sum_varyingdensity_stats_file_path="$stats_dir/lbs_$sum_varyingdensity_stats_file"
+lbs_sum_varyingqvsetsize_stats_file_path="$stats_dir/lbs_$sum_varyingqvsetsize_stats_file"
+lbs_sum_varyingqvsetsubnetsize_stats_file_path="$stats_dir/lbs_$sum_varyingqvsetsubnetsize_stats_file"
+
+# Run Experiments
+if [ "$figures_only" == false ]; then
+    args="-c lmk_agg_exp -e query_exp -g $idx_dir/$default_network.bin
+    -k $aknn_kvalues -n $aknn_num_sets -d $aknn_densities -t $aknn_def_type -v $aknn_def_var -p $query_parameters ${rw_sets:+-r $rw_sets} 
+    -m $aknn_qv_setsizes -y $aknn_qv_setsubnetsizes -f $output_path"
+
+    # echo "${exe_path}/$main_program_stats $args"
+    ${exe_path}/$main_program_stats $args
+
+    # Fix stats files for future figure generation
+    if [ "$aknn_varyingk" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$max_varyingk_stats_file"
+        cat $max_varyingk_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $max_varyingk_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingdensity" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$max_varyingdensity_stats_file"
+        cat $max_varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $max_varyingdensity_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingqvsetsize" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$max_varyingqvsetsize_stats_file"
+        cat $max_varyingqvsetsize_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $max_varyingqvsetsize_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$max_varyingqvsetsubnetsize_stats_file"
+        cat $max_varyingqvsetsubnetsize_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $max_varyingqvsetsubnetsize_stats_file_path
+        rm $temp_file_path
+    fi
+
+    if [ "$aknn_varyingk" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$sum_varyingk_stats_file"
+        cat $sum_varyingk_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $sum_varyingk_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingdensity" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$sum_varyingdensity_stats_file"
+        cat $sum_varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $sum_varyingdensity_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingqvsetsize" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$sum_varyingqvsetsize_stats_file"
+        cat $sum_varyingqvsetsize_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $sum_varyingqvsetsize_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$sum_varyingqvsetsubnetsize_stats_file"
+        cat $sum_varyingqvsetsubnetsize_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 13 - False Hits
+        cat $temp_file_path > $sum_varyingqvsetsubnetsize_stats_file_path
+        rm $temp_file_path
+    fi
+
+    # Create Separate Stats File without IER for Lower-Bound Computation Comparison
+    if [ "$aknn_varyingk" == "1" ]; then
+        cat $max_varyingk_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_max_varyingk_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingdensity" == "1" ]; then
+        cat $max_varyingdensity_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_max_varyingdensity_stats_file_path # Column 14 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingqvsetsize" == "1" ]; then
+        cat $max_varyingqvsetsize_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_max_varyingqvsetsize_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+        cat $max_varyingqvsetsubnetsize_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_max_varyingqvsetsubnetsize_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingk" == "1" ]; then
+        cat $sum_varyingk_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_sum_varyingk_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingdensity" == "1" ]; then
+        cat $sum_varyingdensity_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_sum_varyingdensity_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingqvsetsize" == "1" ]; then
+        cat $sum_varyingqvsetsize_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_sum_varyingqvsetsize_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+    if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+        cat $sum_varyingqvsetsubnetsize_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_sum_varyingqvsetsubnetsize_stats_file_path # Column 17 - Total Number of Lowerbounds Computed
+    fi
+fi
+
+# Generate Figures
+
+# Max
+
+# Varying K
+if [ "$aknn_varyingk" == "1" ]; then
+    varyingk_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_max_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $max_varyingk_stats_file_path "6,# of Results (k),$aknn_kvalues_xtics,'','',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "right bottom,vertical maxrows 1,0"
+    varyingk_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_max_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $lbs_max_varyingk_stats_file_path "6,# of Results (k),$aknn_kvalues_xtics,'','',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+# Varying Density
+if [ "$aknn_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_max_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $max_varyingdensity_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingdensity_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_max_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $lbs_max_varyingdensity_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+# Varying Query Vertex Set Size
+if [ "$aknn_varyingqvsetsize" == "1" ]; then
+    varyingqvsetsize_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_max_varyingqvsetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsize_figure_file_prefix $max_varyingqvsetsize_stats_file_path "0,# of Query Vertices,usecol,10,'',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "center bottom,horizontal maxcols 1,0"
+    varyingqvsetsize_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_max_varyingqvsetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsize_figure_file_prefix $lbs_max_varyingqvsetsize_stats_file_path "0,# of Query Vertices,usecol,10,'',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+# Varying Query Vertex Set Subnet Size
+if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+    varyingqvsetsubnetsize_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_max_varyingqvsetsubnetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsubnetsize_figure_file_prefix $max_varyingqvsetsubnetsize_stats_file_path "0,Subnetwork Size (%),usecol,13,'',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "right bottom,horizontal maxcols 1,0"
+    varyingqvsetsubnetsize_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_max_varyingqvsetsubnetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsubnetsize_figure_file_prefix $lbs_max_varyingqvsetsubnetsize_stats_file_path "0,Subnetwork Size (%),usecol,13,'',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+#
+# Sum
+#
+
+# Varying K
+if [ "$aknn_varyingk" == "1" ]; then
+    varyingk_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_sum_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $sum_varyingk_stats_file_path "6,# of Results (k),$aknn_kvalues_xtics,'','',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "right top,vertical maxrows 1,0"
+    varyingk_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_sum_varyingk_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingk_figure_file_prefix $lbs_sum_varyingk_stats_file_path "6,# of Results (k),$aknn_kvalues_xtics,'','',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left center,vertical maxrows 2,0"
+fi
+
+# Varying Density
+if [ "$aknn_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_sum_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $sum_varyingdensity_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingdensity_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_sum_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $lbs_sum_varyingdensity_stats_file_path "9,Density,$aknn_densities_xtics,'',logscale,''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+# Varying Query Vertex Set Size
+if [ "$aknn_varyingqvsetsize" == "1" ]; then
+    varyingqvsetsize_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_sum_varyingqvsetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsize_figure_file_prefix $sum_varyingqvsetsize_stats_file_path "0,# of Query Vertices,usecol,10,'',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "right top,vertical maxrows 1,0"
+    varyingqvsetsize_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_sum_varyingqvsetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsize_figure_file_prefix $lbs_sum_varyingqvsetsize_stats_file_path "0,# of Query Vertices,usecol,10,'',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi
+
+# Varying Query Vertex Set Subnet Size
+if [ "$aknn_varyingqvsetsubnetsize" == "1" ]; then
+    varyingqvsetsubnetsize_figure_file_prefix="cand_spdist_stats_${default_network}_$aknn_sum_varyingqvsetsubnetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsubnetsize_figure_file_prefix $sum_varyingqvsetsubnetsize_stats_file_path "0,Subnetwork Size (%),usecol,13,'',''" "14,Network Distances,logscale,'10^%T'" "IER;dark-magenta;12,NVD;dark-green;6,COLT;dark-red;4" "right bottom,horizontal maxcols 1,0"
+    varyingqvsetsubnetsize_figure_file_prefix="cand_unpruned_stats_${default_network}_$aknn_sum_varyingqvsetsubnetsize_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingqvsetsubnetsize_figure_file_prefix $lbs_sum_varyingqvsetsubnetsize_stats_file_path "0,Subnetwork Size (%),usecol,13,'',''" "15,Candidates,logscale,'10^%T'" "NVD;dark-green;6,COLT;dark-red;4" "left top,vertical maxrows 2,0"
+fi

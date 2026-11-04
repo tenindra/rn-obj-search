@@ -1,0 +1,35 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash buildBinaryGraphs [-d datasets]
+Builds the binary graph of each dataset from its network's text files.
+  -d, --dataset  comma-separated datasets (all, or omitted: every dataset in datasets/ whose graph files are in data_dir)"
+. scriptArguments d 0 "$@"
+. globalVariables "" --quiet_globalVariables # The experiment does not affect the graphs
+
+# Builds $idx_dir/<dataset>.bin from the text files of the dataset's network (data_dir/<network>-<edge_type>.graph and .coordinates)
+# and names the binary graph after the dataset, so every index and set built from it carries the dataset's name
+
+all_networks=false
+if [[ $dataset != "" && $dataset != "all" ]]; then
+    IFS=',' read -ra networks <<< "$dataset"
+else
+    networks=($(ls "$datasets_dir"))
+    all_networks=true
+fi
+
+for dataset in "${networks[@]}"
+do
+    ( # A subshell per dataset, so that no setting of its dataset config carries over to the next dataset
+        . globalVariables "" --quiet_globalVariables "$dataset"
+        edge_file="$network-$edge_type.graph"
+        vertex_file="$network-$edge_type.coordinates" # Each edge type has its own copy of the network's coordinates (identical but for the header)
+        if [[ $all_networks == true && ! -f $data_dir/$edge_file ]]; then
+            echo "Skipping $dataset ($data_dir/$edge_file not found)"
+            exit 0 # Leaves the subshell
+        fi
+        args="-c graph -e $data_dir/$edge_file -n $data_dir/$vertex_file -o $idx_dir/${dataset}.bin -s $stats_dir/$idx_stats_file -r $dataset"
+        ${exe_path}/$main_program $args
+    )
+done

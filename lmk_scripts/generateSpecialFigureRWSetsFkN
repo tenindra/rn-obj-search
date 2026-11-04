@@ -1,0 +1,52 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# $1 output file (without extension)
+# $2 data file (with header line)
+
+data_file=${2:-}
+fig_script_file="${data_file%.*}.gp"
+
+cat > $fig_script_file <<- EOM
+    reset
+    set terminal pdf enhanced size 9.5,3.5 font ',22'
+    set output '${1:-}.pdf'
+
+    set style data histogram
+    set style histogram cluster gap 1
+
+    set style fill solid border rgb "black"
+    set auto x
+
+    set ylabel 'Query Time ({/Symbol m}s)'
+    set logscale y
+    set format y '10^{%T}'
+    
+    set xtics nomirror font ',18,'
+    
+    set grid ytics
+    
+    set key left top vertical maxcols 1
+
+#     plot '$2' using 2:xtic(1) title col lc rgb 'blue', \
+#            '' using 3:xtic(1) title col lc rgb 'red', \
+#            '' using 4:xtic(1) title col lc rgb 'dark-magenta', \
+#            '' using 5:xtic(1) title col lc rgb 'black', \
+#            '' using 6:xtic(1) title col lc rgb 'dark-green' \
+#            '' using 7:xtic(1) title col lc rgb 'dark-red'
+           
+    GAPSIZE=1
+    STARTCOL=2
+    ENDCOL=3
+    NCOL=ENDCOL-STARTCOL+1
+    BOXWIDTH=1./(GAPSIZE+NCOL)
+
+    plot '${2:-}' using 2:xtic(1) title col lc rgb 'dark-magenta' fs pattern 2, \
+           '' u (column(0)-1+BOXWIDTH*(2-STARTCOL+GAPSIZE/2+1)-0.5):2:2 notitle w labels font ',13' rotate left offset 0,0.2, \
+           '' using 3:xtic(1) title col lc rgb 'dark-red' fs pattern 7, \
+           '' u (column(0)-1+BOXWIDTH*(3-STARTCOL+GAPSIZE/2+1)-0.5):3:3 notitle w labels font ',13' rotate left offset 0,0.2, \
+
+EOM
+
+gnuplot $fig_script_file # 2>/dev/null

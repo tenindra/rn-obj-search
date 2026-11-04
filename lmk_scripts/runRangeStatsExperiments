@@ -1,0 +1,100 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runRangeStatsExperiments [-d dataset] [-o] [-f]
+Runs the range query statistics experiments (rn_obj_search_stats) on the dataset and draws their figures.
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments dof 0 "$@"
+. globalVariables range "" "$dataset"
+
+# Experiment Setup
+
+# Varying Range
+varyingrange_stats_file="stats_${default_network}_$range_varyingrange_stats_file_suffix.txt"
+varyingrange_stats_file_path="$stats_dir/$varyingrange_stats_file"
+if [ "$range_varyingrange" == "1" ] && [ -f "$varyingrange_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingrange_stats_file_path" "$stats_dir/${varyingrange_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingrange_stats_file_path"
+    fi
+fi
+
+# Varying Density
+varyingdensity_stats_file="stats_${default_network}_$range_varyingdensity_stats_file_suffix.txt"
+varyingdensity_stats_file_path="$stats_dir/$varyingdensity_stats_file"
+if [ "$range_varyingdensity" == "1" ] && [ -f "$varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingdensity_stats_file_path" "$stats_dir/${varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingdensity_stats_file_path"
+    fi
+fi
+
+range_rw="0" # Don't run real-world experiments for stats collection
+range_methods="ine=0,ier_phl=1,nvd_phl=1,colt_phl=1" # Don't run non multi-step methods for stats collection
+range_query_parameters="$range_methods,range_def_range=$range_def_range,range_def_density=$range_def_density,range_def_type=$range_def_type,range_def_var=$range_def_var,range_rw=$range_rw,range_varyingrange=$range_varyingrange,range_varyingdensity=$range_varyingdensity"
+
+varyingrwset_stats_file="stats_${default_network}_$range_varyingrwset_stats_file_suffix.txt" # Placeholder only
+
+index_parameters="range_index_parameters"
+obj_index_parameters="range_obj_index_parameters" # Part of the object index file names
+query_parameters="$dataset_index_parameters,${!index_parameters},${!obj_index_parameters},$range_query_parameters,range_varyingrange_stats_file=$varyingrange_stats_file,range_varyingdensity_stats_file=$varyingdensity_stats_file,range_varyingrwset_stats_file=$varyingrwset_stats_file"
+
+# Note: No '=' signs allowed in stats file names
+
+# Need to create a new file for second stat so we can exclude IER from it
+lbs_varyingrange_stats_file_path="$stats_dir/lbs_$varyingrange_stats_file"
+lbs_varyingdensity_stats_file_path="$stats_dir/lbs_$varyingdensity_stats_file"
+
+# Run Experiments
+args="-c lmk_range_exp -e query_exp -g $idx_dir/$default_network.bin -q $sets_dir/${default_network}_qv_$range_pts_filename.txt -a $range_rangevalues -n $range_num_sets -d $range_densities -t $range_def_type -v $range_def_var -p $query_parameters ${rw_sets:+-r $rw_sets} -f $output_path"
+    
+# echo "${exe_path}/$main_program $args"
+if [ "$figures_only" == false ]; then
+    ${exe_path}/$main_program_stats $args
+
+    # Fix stats files for future figure generation
+    if [ "$range_varyingrange" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingrange_stats_file"
+        cat $varyingrange_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 14 - Total Number of Network Distances Computed to Objects
+        cat $temp_file_path > $varyingrange_stats_file_path
+        rm $temp_file_path
+    fi
+    if [ "$range_varyingdensity" == "1" ]; then
+        temp_file_path="$stats_dir/temp_$varyingdensity_stats_file"
+        cat $varyingdensity_stats_file_path | bash extractColumnAndAppend 4 "cand_spdist=([[:digit:]]+)" > $temp_file_path # Column 14 - Total Number of Network Distances Computed to Objects
+        cat $temp_file_path > $varyingdensity_stats_file_path
+        rm $temp_file_path
+    fi
+
+    # Create Separate Stats File without IER for Candidate Object Comparison
+    if [ "$range_varyingrange" == "1" ]; then
+        cat $varyingrange_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingrange_stats_file_path # Column 15 - Total Number of Candidate Objects (i.e., Unpruned)
+    fi
+    if [ "$range_varyingdensity" == "1" ]; then
+        cat $varyingdensity_stats_file_path | bash excludeStatsRows 5 ier_phl | bash excludeEmptyRows | bash splitStatsRows 5 | bash extractColumnAndAppend 4 "cand_unpruned=([[:digit:]]+)" > $lbs_varyingdensity_stats_file_path # Column 15 - Total Number of Lowerbounds (i.e., Unpruned)
+    fi
+
+fi
+
+
+# Generate Figures
+# Varying Range
+if [ "$range_varyingrange" == "1" ]; then
+    varyingrange_figure_file_prefix="cand_spdist_stats_${default_network}_$range_varyingrange_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingrange_figure_file_prefix $varyingrange_stats_file_path "0,Range (% of D),usecol,13,'',''" "14,Network Distances,logscale,'10^%T'" "IER-PHL;dark-magenta;12,NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingrange_figure_file_prefix="cand_unpruned_stats_${default_network}_$range_varyingrange_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingrange_figure_file_prefix $lbs_varyingrange_stats_file_path "0,Range (% of D),usecol,13,'',''" "15,Candidates,logscale,'10^%T'" "NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "left top,horizontal maxcols 1,0"
+fi
+
+# Varying Density
+if [ "$range_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="cand_spdist_stats_${default_network}_$range_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $varyingdensity_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "14,Network Distances,logscale,'10^%T'" "IER-PHL;dark-magenta;12,NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "left top,horizontal maxcols 1,0"
+    varyingdensity_figure_file_prefix="cand_unpruned_stats_${default_network}_$range_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $lbs_varyingdensity_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "15,Candidates,logscale,'10^%T'" "NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "left top,horizontal maxcols 1,0"
+fi

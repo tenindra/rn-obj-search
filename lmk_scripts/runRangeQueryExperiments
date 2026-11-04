@@ -1,0 +1,106 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runRangeQueryExperiments [-d dataset] [-o] [-f]
+Runs the range query time experiments on the dataset and draws their figures.
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -o, --overwrite     delete the existing stats files instead of keeping them with a timestamp
+  -f, --figures-only  draw the figures from the existing stats files, without running the experiments"
+. scriptArguments dof 0 "$@"
+. globalVariables range "" "$dataset"
+
+# Experiment Setup
+
+# Varying Range
+varyingrange_stats_file="${default_network}_$range_varyingrange_stats_file_suffix.txt"
+varyingrange_stats_file_path="$stats_dir/$varyingrange_stats_file"
+if [ "$range_varyingrange" == "1" ] && [ -f "$varyingrange_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingrange_stats_file_path" "$stats_dir/${varyingrange_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingrange_stats_file_path"
+    fi
+fi
+
+# Varying Density
+varyingdensity_stats_file="${default_network}_$range_varyingdensity_stats_file_suffix.txt"
+varyingdensity_stats_file_path="$stats_dir/$varyingdensity_stats_file"
+if [ "$range_varyingdensity" == "1" ] && [ -f "$varyingdensity_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingdensity_stats_file_path" "$stats_dir/${varyingdensity_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingdensity_stats_file_path"
+    fi
+fi
+
+# Varying RW Object Set
+varyingrwset_stats_file="${default_network}_$range_varyingrwset_stats_file_suffix.txt"
+varyingrwset_stats_file_path="$stats_dir/$varyingrwset_stats_file"
+if [ "$range_rw" == "1" ] && [ -f "$varyingrwset_stats_file_path" ] && [ "$figures_only" == false ]; then
+    if [ "$overwrite" == false ]; then
+        mv "$varyingrwset_stats_file_path" "$stats_dir/${varyingrwset_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+    else
+        rm "$varyingrwset_stats_file_path"
+    fi
+fi
+
+index_parameters="range_index_parameters"
+obj_index_parameters="range_obj_index_parameters" # Part of the object index file names
+query_parameters="$dataset_index_parameters,${!index_parameters},${!obj_index_parameters},$range_query_parameters,range_varyingrange_stats_file=$varyingrange_stats_file,range_varyingdensity_stats_file=$varyingdensity_stats_file,range_varyingrwset_stats_file=$varyingrwset_stats_file,range_rw_qv_file=${default_network}_qv_$range_rw_pts_filename.txt"
+
+# Note: No '=' signs allowed in stats file names
+
+# Run Experiments
+args="-c lmk_range_exp -e query_exp -g $idx_dir/$default_network.bin -q $sets_dir/${default_network}_qv_$range_pts_filename.txt -a $range_rangevalues -n $range_num_sets -d $range_densities -t $range_def_type -v $range_def_var -p $query_parameters ${rw_sets:+-r $rw_sets} -f $output_path"
+    
+if [ "$figures_only" == false ]; then
+    # echo "$pin_cmd ${exe_path}/$main_program $args"
+    $pin_cmd ${exe_path}/$main_program $args
+fi
+
+# Generate Figures
+# Varying Range
+if [ "$range_varyingrange" == "1" ]; then
+    varyingrange_figure_file_prefix="${default_network}_$range_varyingrange_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingrange_figure_file_prefix $varyingrange_stats_file_path "0,Range (% of D),usecol,13,'',''" "7,Query Time ({/Symbol m}s),logscale,'10^%T'" "IER-PHL;dark-magenta;12,NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "right bottom,horizontal maxcols 1,0"
+fi
+
+# Varying Density
+if [ "$range_varyingdensity" == "1" ]; then
+    varyingdensity_figure_file_prefix="${default_network}_$range_varyingdensity_stats_file_suffix"
+    bash generateFigure $fig_dir/$varyingdensity_figure_file_prefix $varyingdensity_stats_file_path "9,Density,$range_densities_xtics,'',logscale,''" "7,Query Time ({/Symbol m}s),logscale,'10^%T'" "IER-PHL;dark-magenta;12,NVD-PHL;dark-green;6,COLT-PHL;dark-red;4" "left top,horizontal maxcols 1,0"
+fi
+
+# Varying Real-World Set (Bar Histogram)
+header_row="Set\tIER-PHL\tNVD-PHL\tCOLT-PHL"
+varyingrwset_figure_file_prefix="${default_network}_$range_varyingrwset_stats_file_suffix"
+varyingrwset_figure_data_file="figdata_${default_network}_$range_varyingrwset_stats_file_suffix.txt"
+
+if [ "$range_rw" == "1" ]; then
+    pois=()
+    declare -A lines
+    while IFS=$'\t' read -r -a columns; do
+        if [[ ${#columns[@]} -lt 8 ]]; then
+            continue
+        fi
+        poi=${columns[7]}
+        if ! [ ${lines[$poi]+abc} ]; then
+            pois+=($poi)
+            display_poi=$poi
+            display_poi=${display_poi//_/ }
+            lines[$poi]="\"$display_poi\""
+        fi 
+        decimal_time=${columns[6]}
+    #     lines[$poi]="${lines[$poi]}\t$decimal_time"
+        lines[$poi]="${lines[$poi]}\t${decimal_time%.*}"
+    done < $varyingrwset_stats_file_path
+
+    > $stats_dir/$varyingrwset_figure_data_file
+    echo -e $header_row >> $stats_dir/$varyingrwset_figure_data_file
+    for i in "${!pois[@]}"; do 
+        echo -e ${lines[${pois[$i]}]} >> $stats_dir/$varyingrwset_figure_data_file
+    done
+
+    bash generateSpecialFigureRWSetsAkNN $fig_dir/$varyingrwset_figure_file_prefix $stats_dir/$varyingrwset_figure_data_file
+fi

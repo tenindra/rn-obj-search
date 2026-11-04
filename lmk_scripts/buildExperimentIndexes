@@ -1,0 +1,111 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash buildExperimentIndexes -e experiment [-o] [-d dataset] [-i objects]
+Builds the indexes of one experiment, with its index parameters: its SUL-Tree, from the partition with its fanout and maximum leaf
+size (built first if it does not exist yet; bash buildPartitions -o rebuilds it), then its COL-Trees for the object sets, which
+must already exist (bash generateObjectSets), and for the real-world POI sets if the experiment runs its real-world list.
+buildDatasetIndexes builds the indexes that the dataset's experiments share.
+  -e, --experiment  knn, aknn, fkn or range
+  -o, --overwrite   start the experiment's COL-Tree stats file afresh (keeping the old one with a timestamp) and draw its object
+                    index figures, with the latest rows of each object index type the dataset builds (bash buildDatasetIndexes)
+  -d, --dataset     the dataset (default_network in globalVariables if omitted)
+  -i, --indexes     objects builds only the COL-Trees, from the existing SUL-Tree (e.g. after generateObjectSets -o)"
+. scriptArguments eodi 0 "$@"
+. globalVariables "$experiment" "" "$dataset"
+
+if [[ $num_sets == 0 ]]; then
+    echo "num_sets is not set!"
+    exit 1
+fi
+
+if [[ -n $indexes && $indexes != "objects" ]]; then
+    echo -e "Unknown indexes $indexes (-i takes only objects: the COL-Trees, without the partition and the SUL-Tree)\n\n$usage" >&2
+    exit 1
+fi
+
+index_parameters="${experiment}_index_parameters"
+obj_index_parameters="${experiment}_obj_index_parameters"
+
+# The partition depends only on the fanout and the maximum leaf size, so SUL-Trees with different landmark parameters share it.
+# With -i objects, the COL-Trees are built from the SUL-Tree already built (the binary stops if it is missing)
+if [[ $indexes != "objects" ]]; then
+    fanout=$(get_param "${!index_parameters}" sltree_fanout)
+    maxleafsize=$(get_param "${!index_parameters}" sltree_maxleafsize)
+    partition_file="$idx_dir/${default_network}_fanout=${fanout}_maxleafsize=${maxleafsize}.partition"
+    if [[ -f "$partition_file" ]]; then
+        echo "Using the partition $partition_file (bash buildPartitions -e $experiment -o rebuilds it)"
+    else
+        echo "Building partition for $default_network..."
+        args="-c lmk_exp -e partitions -g $idx_dir/$default_network.bin -p sltree=1,${!index_parameters} -f $output_path -s $stats_dir/$idx_stats_file"
+        #echo "${exe_path}/$main_program $args"
+        ${exe_path}/$main_program $args
+    fi
+
+    echo "Building the SUL-Tree for $default_network..."
+    args="-c lmk_exp -e indexes -g $idx_dir/$default_network.bin -p sltree=1,$dataset_index_parameters,${!index_parameters} -f $output_path -s $stats_dir/$idx_stats_file"
+    #echo "${exe_path}/$main_program $args"
+    ${exe_path}/$main_program $args
+fi
+
+echo "Building the COL-Trees for $default_network..."
+colt_stats_file_path="$stats_dir/${default_network}_${experiment}_$obj_stats_file"
+if [[ $overwrite == true && -f "$colt_stats_file_path" ]]; then
+    mv "$colt_stats_file_path" "$stats_dir/${default_network}_${experiment}_${obj_stats_file}_$(date +%Y-%m-%d-%H:%M:%S).txt"
+fi
+colt_parameters="colt=1,$dataset_index_parameters,${!index_parameters},${!obj_index_parameters}"
+# Note: The object sets and their densities are shared by the experiments the dataset runs
+args="-c lmk_exp -e objects -g $idx_dir/$default_network.bin -n $num_sets -d $densities -t $knn_def_type -v $knn_def_var -p $colt_parameters -f $output_path -s $colt_stats_file_path"
+#echo "${exe_path}/$main_program $args"
+${exe_path}/$main_program $args
+experiment_rw="${experiment}_rw"
+if [[ ${!experiment_rw} == "1" ]]; then
+    echo -e "\nBuilding the real-world COL-Trees for $default_network..."
+    args="-c lmk_exp -e rw_obj_idxs -g $idx_dir/$default_network.bin -p $colt_parameters,rw_network=$network -f $output_path -s $stats_dir/$rw_obj_stats_file -r $rw_sets"
+    #echo "${exe_path}/$main_program $args"
+    ${exe_path}/$main_program $args
+fi
+
+# Object index figures of the experiment: the latest rows (one per density) of each object index type that buildDatasetIndexes
+# builds (enabled in dataset_indexes), from the dataset's object index stats file, and of the experiment's COL-Trees
+if [[ $overwrite == true ]]; then
+    # Figure plot line (title;colour;point type) of each object index type, in the order of the figure's blocks
+    obj_index_types="occ_list rtree obj_list nvd colt"
+    declare -A obj_index_plot_lines=([occ_list]="Occ. List;blue;8" [rtree]="R-tree;dark-magenta;12" [obj_list]="OL;black;3" [nvd]="NVD;dark-green;6" [colt]="COL-Tree;dark-red;4")
+    IFS=',' read -ra figure_densities <<< "$densities"
+    obj_idx_stats_file_path="$stats_dir/${default_network}_$obj_stats_file"
+    mkdir -p "$fig_data_dir"
+    figure_data_file_path="$fig_data_dir/${default_network}_${experiment}_obj_idx.txt"
+    : > "$figure_data_file_path"
+    plot_lines=""
+    for obj_index in $obj_index_types; do
+        stats_file_path=$obj_idx_stats_file_path
+        if [[ $obj_index == "colt" ]]; then
+            stats_file_path=$colt_stats_file_path
+        elif [[ "$(get_param "$dataset_indexes" $obj_index)" != "1" ]]; then
+            continue
+        fi
+        # The object index type is the fifth column of a stats row
+        rows=""
+        if [[ -f "$stats_file_path" ]]; then
+            rows=$(awk -F'\t' -v type="$obj_index" '$5 == type' "$stats_file_path" | tail -n ${#figure_densities[@]})
+        fi
+        if [[ -z $rows ]]; then
+            if [[ $obj_index == "colt" ]]; then
+                echo "WARNING: $stats_file_path has no $obj_index rows, so the object index figures leave it out" >&2
+            else
+                echo "WARNING: $stats_file_path has no $obj_index rows, so the object index figures leave it out (bash buildDatasetIndexes builds it)" >&2
+            fi
+            continue
+        fi
+        if [[ -s "$figure_data_file_path" ]]; then
+            printf '\n\n' >> "$figure_data_file_path" # Two blank lines between the blocks of the index types (required by gnuplot)
+        fi
+        echo "$rows" >> "$figure_data_file_path"
+        plot_lines="${plot_lines:+$plot_lines,}${obj_index_plot_lines[$obj_index]}"
+    done
+    obj_figure_file_prefix="${default_network}_${experiment}_obj_idx"
+    bash generateFigure "$fig_dir/${obj_figure_file_prefix}_time" $figure_data_file_path "9,Density,$densities_xtics,'',logscale,''" "6,Index Time ({/Symbol m}s),logscale,'10^%T'" "$plot_lines" "right bottom,horizontal maxcols 1,0"
+    bash generateFigure "$fig_dir/${obj_figure_file_prefix}_size" $figure_data_file_path "9,Density,$densities_xtics,'',logscale,''" "7,Index Size (KB),logscale,'10^%T'" "$plot_lines" "right bottom,horizontal maxcols 1,0"
+fi

@@ -1,0 +1,83 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage="Usage: bash runVerification <step> -e experiment [-d dataset] [-m methods] [-g file]
+Verifies the query results of the experiment's synthetic query lists against the ground truth (Dijkstra).
+  step                objects (copy the object sets and their object indexes), ground_truth (compute and save the ground truth),
+                      verify (run the methods against the saved ground truth), dump (print a ground truth file) or all (objects,
+                      ground_truth and verify)
+  -e, --experiment    knn, aknn, fkn or range
+  -d, --dataset       the dataset (default_network in globalVariables if omitted)
+  -m, --methods       verify: comma-separated methods or all (verify_methods in globalVariables if omitted)
+  -g, --ground-truth  dump: the ground truth file to print"
+. scriptArguments edmg 1 "$@"
+if (( ${#positional[@]} == 0 )); then
+    echo -e "No step given\n\n$usage" >&2
+    exit 1
+fi
+step=${positional[0]}
+if [[ $step == "dump" && $ground_truth == "" ]]; then
+    echo -e "dump needs the ground truth file (-g)\n\n$usage" >&2
+    exit 1
+fi
+. globalVariables "$experiment" "" "$dataset"
+
+mkdir -p "$verify_obj_idx_dir" "$verify_gt_dir"
+
+index_parameters="${experiment}_index_parameters"
+obj_index_parameters="${experiment}_obj_index_parameters"
+graph_file="$idx_dir/$default_network.bin"
+
+# Query parameters and arguments as the run*QueryExperiments scripts pass them
+case $experiment in
+    knn)
+        query_parameters="$dataset_index_parameters,${!index_parameters},$knn_query_parameters"
+        query_args="-q $sets_dir/${default_network}_qv_$knn_pts_filename.txt -k $knn_kvalues -n $knn_num_sets -d $knn_densities"
+        ;;
+    aknn)
+        query_parameters="$dataset_index_parameters,${!index_parameters},$aknn_query_parameters"
+        query_args="-k $aknn_kvalues -n $aknn_num_sets -d $aknn_densities -z $aknn_qv_setsizes -y $aknn_qv_setsubnetsizes"
+        ;;
+    fkn)
+        query_parameters="$dataset_index_parameters,${!index_parameters},$fkn_query_parameters"
+        query_args="-q $sets_dir/${default_network}_qv_$fkn_pts_filename.txt -k $fkn_kvalues -n $fkn_num_sets -d $fkn_densities"
+        ;;
+    range)
+        query_parameters="$dataset_index_parameters,${!index_parameters},$range_query_parameters"
+        query_args="-q $sets_dir/${default_network}_qv_$range_pts_filename.txt -a $range_rangevalues -n $range_num_sets -d $range_densities"
+        ;;
+esac
+
+run_step() {
+    case $1 in
+        objects)
+            # All object sets (the maximum number of sets over the network's experiments, as the build scripts use) and their indexes in verify_object_indexes, copied from obj_indexes
+            args="-c verify -e objects -t $experiment -g $graph_file -f $output_path -p $query_parameters,${!obj_index_parameters},$verify_object_indexes -n $num_sets -d $densities"
+            ;;
+        ground_truth)
+            args="-c verify -e ground_truth -t $experiment -g $graph_file -f $output_path -p $query_parameters,${!obj_index_parameters} $query_args ${verify_threads:+-j $verify_threads}"
+            ;;
+        verify)
+            verified_methods=${methods:-$verify_methods}
+            args="-c verify -e verify -t $experiment -g $graph_file -f $output_path -p $query_parameters,${!obj_index_parameters} ${verified_methods:+-m $verified_methods} ${verify_threads:+-j $verify_threads}"
+            ;;
+        dump)
+            args="-c verify -e dump -t $experiment -i $ground_truth"
+            ;;
+        *)
+            echo "Unknown step $1"
+            exit 1
+            ;;
+    esac
+    #echo "${exe_path}/$main_program $args"
+    ${exe_path}/$main_program $args
+}
+
+if [[ $step == "all" ]]; then
+    run_step objects
+    run_step ground_truth
+    run_step verify
+else
+    run_step "$step"
+fi
