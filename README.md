@@ -1,8 +1,10 @@
-# Hierarchical Object Search on Spatial Networks
+# Hierarchical Object Search in Spatial Networks
 
-This repository contains a framework to evaluate the performance of the COL-Tree index for object search on spatial networks. The data structures were first presented in a research paper at ICAPS and subsequently extended for a journal paper (under review). The repository provides the experimental framework, implementation of competing algorithms, and scripts to reproduce all results in the papers. We have released it under the permissive MIT license. Please cite the ICAPS paper if you use our code:
+This repository contains a framework to evaluate the performance of the COL-Tree index for object search on spatial networks. The data structures were first presented in a research paper at ICAPS and subsequently extended for a journal paper (under review, arXiv pre-print below). The repository provides the experimental framework, implementation of competing algorithms, and scripts to reproduce all results in the papers. We have released it under the permissive MIT license. Please cite the papers if you use our code:
 
 Tenindra Abeywickrama, Muhammad Aamir Cheema, and Sabine Storandt. [Hierarchical Graph Traversal for Aggregate k Nearest Neighbors Search in Road Networks](https://doi.org/10.1609/icaps.v30i1.6639). In ICAPS 2020, 2-10.
+
+Tenindra Abeywickrama, Muhammad Aamir Cheema, and Sabine Storandt. [COL-Trees: Efficient Hierarchical Object Search in Spatial Networks](https://arxiv.org/abs/2601.22183). arXiv preprint arXiv:2601.22183 (2026).
 
 ```
 @inproceedings{abey2020hierarchical,
